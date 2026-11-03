@@ -398,6 +398,122 @@ def kundenwissen_abgleich(cfg):
     return zahl
 
 
+# ── Neue Dateien im Kundenordner -> Journal "Dokument" (Umbau Schritt 12, Migration 023) ──
+ABLAGE_AUSNAHMEN = {"acos", "mail-eingang"}
+MAX_NAMEN_IM_EINTRAG = 8
+
+
+def _liste_mit_id(dav, rel):
+    """Wie Dav.liste, zusaetzlich mit der stabilen Nextcloud-Datei-ID (oc:fileid)."""
+    body = (b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop>'
+            b'<d:resourcetype/><d:getcontentlength/><d:getlastmodified/><oc:fileid/>'
+            b'</d:prop></d:propfind>')
+    with dav._req("PROPFIND", rel.rstrip("/") + "/", {"Depth": "1", "Content-Type": "application/xml"}, body) as r:
+        xml = r.read()
+    ns = {"d": "DAV:", "oc": "http://owncloud.org/ns"}
+    out = []
+    for resp in ET.fromstring(xml).findall("d:response", ns):
+        pfad = urllib.parse.unquote(urllib.parse.urlparse(urllib.parse.unquote(resp.findtext("d:href", "", ns))).path)
+        if not pfad.startswith(dav.basis_pfad):
+            continue
+        relpfad = pfad[len(dav.basis_pfad):].strip("/")
+        if relpfad == rel.strip("/"):
+            continue
+        prop = resp.find("d:propstat/d:prop", ns)
+        if prop is None:
+            continue
+        mtime = None
+        lm = prop.findtext("d:getlastmodified", "", ns)
+        if lm:
+            try:
+                mtime = parsedate_to_datetime(lm)
+            except (TypeError, ValueError):
+                pass
+        groesse = prop.findtext("d:getcontentlength", "", ns)
+        out.append({"pfad": relpfad, "ordner": prop.find("d:resourcetype/d:collection", ns) is not None,
+                    "id": (prop.findtext("oc:fileid", "", ns) or "").strip(),
+                    "groesse": int(groesse) if groesse.isdigit() else None, "geaendert_am": mtime})
+    return out
+
+
+def _ablage_dateien(dav, rel, ausgeblendet, tiefe=0):
+    for e in _liste_mit_id(dav, rel):
+        name = e["pfad"].rsplit("/", 1)[-1]
+        if name.startswith(".") or name in UEBERSPRINGEN:
+            continue
+        if e["ordner"]:
+            if name.lower() in ABLAGE_AUSNAHMEN or name.lower() in ausgeblendet or tiefe > 8:
+                continue
+            yield from _ablage_dateien(dav, e["pfad"], ausgeblendet, tiefe + 1)
+        elif e["id"]:
+            yield e
+
+
+def dokumente_ins_journal():
+    """Neue Dateien in den Kundenordnern erfassen und je Unternehmen einen Journal-Eintrag
+    "Dokument" anlegen. Erster Lauf: nur Bestand erfassen. Rueckgabe: Kennzahlen."""
+    zahl = {"dateien": 0, "neu": 0, "eintraege": 0, "bestand_erfasst": False, "ohne_firma": 0}
+    if not core._tabelle_da("ablage_datei"):
+        return zahl
+    dav = kunden_verbindung()
+    if dav is None:
+        return zahl
+    erstlauf = core._q1("SELECT 1 AS x FROM ablage_datei LIMIT 1") is None
+    zahl["bestand_erfasst"] = erstlauf
+    firmen = {_schluessel(r["name"]): (r["id"], r["name"])
+              for r in core._q("SELECT id, name FROM firmen WHERE archiviert_am IS NULL")}
+    bekannt = {r["datei_id"]: r for r in core._q("SELECT datei_id, pfad, firma_id FROM ablage_datei")}
+    ausgeblendet = {w.lower() for w in (core._system_raw().get("acos_ordner_ausblenden") or []) if isinstance(w, str)}
+    neu_je_firma, gesehen = {}, set()
+    for ordner in dav.liste(""):
+        if not ordner["ordner"] or ordner["pfad"].startswith("."):
+            continue
+        treffer = firmen.get(_schluessel(ordner["pfad"]))
+        if not treffer:
+            zahl["ohne_firma"] += 1
+            continue
+        firma_id, firma = treffer
+        for d in _ablage_dateien(dav, ordner["pfad"], ausgeblendet):
+            zahl["dateien"] += 1
+            gesehen.add(d["id"])
+            alt = bekannt.get(d["id"])
+            if alt:
+                if alt["pfad"] != d["pfad"] or alt["firma_id"] != firma_id:
+                    core._x("UPDATE ablage_datei SET pfad=%s, firma_id=%s, entfernt=false, zuletzt_am=now() WHERE datei_id=%s",
+                            (d["pfad"], firma_id, d["id"]))
+                continue
+            core._x("""INSERT INTO ablage_datei (datei_id, pfad, firma_id, groesse, geaendert_am)
+                       VALUES (%s,%s,%s,%s,%s) ON CONFLICT (datei_id) DO NOTHING""",
+                    (d["id"], d["pfad"], firma_id, d["groesse"], d["geaendert_am"]))
+            if not erstlauf:
+                neu_je_firma.setdefault((firma_id, firma), []).append(d)
+                zahl["neu"] += 1
+    weg = [i for i in bekannt if i not in gesehen]
+    if weg:
+        core._x("UPDATE ablage_datei SET entfernt=true WHERE datei_id = ANY(%s) AND NOT entfernt", (weg,))
+    for (firma_id, firma), dateien in neu_je_firma.items():
+        dateien.sort(key=lambda d: d["pfad"].lower())
+        namen = [d["pfad"].rsplit("/", 1)[-1] for d in dateien]
+        if len(namen) == 1:
+            text = f"Neu im Kundenordner: {namen[0]}"
+        else:
+            text = f"{len(namen)} neue Dateien im Kundenordner: " + ", ".join(namen[:MAX_NAMEN_IM_EINTRAG]) + \
+                   (f" und {len(namen) - MAX_NAMEN_IM_EINTRAG} weitere" if len(namen) > MAX_NAMEN_IM_EINTRAG else "")
+        ordner_set = {d["pfad"].rsplit("/", 1)[0] for d in dateien}
+        gemeinsam = ordner_set.pop() if len(ordner_set) == 1 else firma
+        rel_ordner = f"{core.kunden_ablage_basis()}/{gemeinsam}"
+        payload = {"anhaenge": [{"name": d["pfad"][len(firma) + 1:] if d["pfad"].startswith(firma + "/") else d["pfad"],
+                                 "pfad": f"{core.kunden_ablage_basis()}/{d['pfad']}"} for d in dateien[:50]],
+                   "anhang_ordner": rel_ordner, "anhang_link": core._nextcloud_ordner_link(rel_ordner),
+                   "quelle": "nextcloud"}
+        r = core._x("""INSERT INTO aktivitaeten (firma_id, art, datum, quelle, notiz, payload)
+                       VALUES (%s,'dokument',%s,'nextcloud',%s,%s::jsonb) RETURNING id""",
+                    (firma_id, core.heute_lokal(), text, core.json.dumps(payload, ensure_ascii=False)))[0]
+        core._x("UPDATE ablage_datei SET aktivitaet_id=%s WHERE datei_id = ANY(%s)", (r["id"], [d["id"] for d in dateien]))
+        zahl["eintraege"] += 1
+    return zahl
+
+
 # ── Lauf ─────────────────────────────────────────────────────────────────────
 
 def abgleich(ausgeloest_von="timer"):
@@ -494,6 +610,11 @@ def abgleich(ausgeloest_von="timer"):
         except Exception as e:
             kunden = {"meldung": f"{e.__class__.__name__}: {e}"[:300]}
             log("Kundenwissen fehlgeschlagen:\n" + traceback.format_exc())
+        try:
+            kunden["dokumente"] = dokumente_ins_journal()
+        except Exception as e:
+            kunden["dokumente"] = {"meldung": f"{e.__class__.__name__}: {e}"[:300]}
+            log("Dokumente ins Journal fehlgeschlagen:\n" + traceback.format_exc())
         core._x("UPDATE wissen_laeufe SET kunden=%s::jsonb WHERE id=%s",
                 (core.json.dumps(kunden, ensure_ascii=False, default=str), lauf))
         log(f"Kundenwissen: {kunden}")

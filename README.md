@@ -28,9 +28,9 @@ hochgeladen wurde, lässt sich nachträglich kaum noch sauber aus der Historie e
 
 | Ordner | Inhalt |
 |---|---|
-| `CPX12-Postgres/` | **Zielstand.** Auf Postgres umgebaute Fassung: `crm_core.py`, `crm_serve.py`, `mail_poller.py`, `manage_users.py`, systemd-Units, Caddy-Konfiguration. |
-| `CPX12-Generalprobe/` | **Derzeit live.** Markdown-basierter Stand, der aktuell auf dem Server läuft. Bleibt, bis auch die Vorführ-Instanz auf Postgres umgestellt ist – siehe unten. |
-| `Migration-Postgres/` | Schema, Importskript, Einrichtungs- und Testskripte für die Umstellung. |
+| `CPX12-Postgres/` | **Live.** Der Code, der auf dem CPX12 unter `/opt/crm` läuft: `crm_core.py`, `crm_serve.py`, `mail_poller.py`, `kalender.py`, `wissen_sync.py`, `acos_sync.py`, `tagesabschluss.py`, `manage_users.py`, systemd-Units, Caddy-Konfiguration. Stand: Umbau 14 plus Kundenwissen mit ACOS-Dokumenten (03.11.2026). |
+| `CPX12-Generalprobe/` | Alter Markdown-Stand. Wird nur noch von der Vorführ-Instanz gebraucht, siehe unten. |
+| `Migration-Postgres/` | Schema, Migrationen 002–023 (`migration_NNN_<thema>.sql`, in Nummernfolge einspielen), Importskript, Einrichtungs- und Testskripte (`smoke_test.py`, `test_kundenwissen_acos.py`). |
 | `Demo-Deployment/` | Vorführ-Server mit automatischem Zurücksetzen, mit erfundenen Beispieldaten. Läuft noch auf dem Markdown-Code. |
 | `archiv/` | Dokumente, die den alten Markdown-Aufbau beschreiben. Inhaltlich noch brauchbar, aber nicht mehr der aktuelle Stand. |
 | `setup_test_server.sh` | Grundeinrichtung des Servers. Wird von `Migration-Postgres/setup_postgres.sh` vorausgesetzt. |
@@ -56,9 +56,10 @@ ausgerollt.
 Am Ende jeder Arbeitssitzung committen und hochladen – sonst ist die Rücksicherung
 irgendwann Monate alt und der Server längst weiter.
 
-Der Server holt sich seinen Stand aus diesem Repository (`git pull`), statt dass
-Dateien einzeln hochgeschoben werden. Ein `git status` auf dem Server zeigt
-deshalb jederzeit, ob dort jemand direkt am Live-System gearbeitet hat.
+Ausgeliefert wird derzeit per `scp` mit Prüfsummenvergleich; die Schritte stehen je Änderung in
+`NAECHSTES-UPDATE.md`. Später soll sich der Server seinen Stand per `git pull` holen
+(`DEPLOY-Git-CPX12.md`). Dieses Repository ist die einzige Quelle für den Code – der frühere
+Arbeitsordner `~/crm-umbau` ist seit 03.11.2026 Archiv.
 
 ---
 

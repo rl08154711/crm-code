@@ -214,3 +214,83 @@ cd /tmp && sudo -u crmapp python3 /opt/crm/wissen_sync.py hand 2>&1 | grep -i "k
 
 Rückweg: `cp /root/crm-code-vor-kundenwissen/* /opt/crm/ && chown crmapp:crmapp /opt/crm/*.py && systemctl restart crm`.
 Migration additiv, darf bleiben.
+
+## Kundenwissen: ACOS-Dokumente als Verweis (03.11.2026, keine Migration)
+
+Im Reiter „Kundenwissen“ der Firmenakte gibt es den neuen Block **„Dokumente in ACOS“**: alle
+Dokumente (kind=document), die der ACOS-Abgleich für die Firma kennt, mit Titel, Datum und
+Link „in ACOS ↗“. Kein Download, kein Inhalt im CRM – die Datei bleibt in ACOS. Die Suche im
+Reiter findet die Dokumente über den Titel (auch per Wortwurzel, „gestundet“ → „Stundungsantrag“).
+Ausgeblendet werden in ACOS entfernte Dokumente und alles, was kein Dokument ist. Der
+ACOS-Abgleich vermerkt bei Dokumenten „Datei bleibt in ACOS – im Kundenwissen als Verweis“.
+
+Link: Liefert ACOS einen eigenen Link, gilt der. Sonst `https://acos.alchimedus.pro/clients/{client_id}`
+(Muster bestätigt am Mandanten M-10). Abweichend einstellbar in `config.json`:
+`"acos": {"dokument_link": "…{client_id}…{id}…"}`.
+
+✅ live seit 03.11.2026 (crm_core.py `8a8a89fc…`, acos_sync.py `a200faf7…`). Aufgesetzt auf den
+Umbau-Stand (siehe nächster Abschnitt), ausgeliefert aus `~/crm-umbau`.
+
+Getestet gegen `crm_test` mit Migrationen 002–023 und dem Live-Code: `test_kundenwissen_acos.py` 11/11 grün,
+`smoke_test.py` 80 grün, 4 rot – dieselben 4 wie beim unveränderten Live-Code (der Smoke-Test kennt den
+Umbau noch nicht), Oberfläche ohne JavaScript-Fehler.
+
+```bash
+# [Mac]
+cd ~/crm-umbau
+scp crm_core.py acos_sync.py root@46.225.13.130:/tmp/
+
+# [Server] Prüfen
+cd /opt/crm && sha1sum crm_core.py acos_sync.py
+#   47185719f979ebfbcb48502f818626febf5b295e  crm_core.py   (live, Umbau 13)
+#   9d4fd8e5eb1b439bcc3730070c3afe1a69c1d66a  acos_sync.py
+cd /tmp && sha1sum crm_core.py acos_sync.py
+#   8a8a89fc387ee243a8ab2e42e38d2eb5ac1c61f3  crm_core.py
+#   a200faf795b32a26e83a3aee833edd722145812a  acos_sync.py
+
+# [Server] Sichern, einspielen, neu starten
+mkdir -p /root/crm-code-vor-acos-dokumente && cp -p /opt/crm/crm_core.py /opt/crm/acos_sync.py /root/crm-code-vor-acos-dokumente/
+cp /tmp/crm_core.py /tmp/acos_sync.py /opt/crm/ && chown crmapp:crmapp /opt/crm/crm_core.py /opt/crm/acos_sync.py
+rm /tmp/crm_core.py /tmp/acos_sync.py
+systemctl restart crm && sleep 3 && systemctl is-active crm
+```
+
+Rückweg: `cp /root/crm-code-vor-acos-dokumente/* /opt/crm/ && chown crmapp:crmapp /opt/crm/*.py && systemctl restart crm`.
+
+## Repository auf Live-Stand gebracht (03.11.2026)
+
+Bis heute fehlte im Repository der Umbau vom 31.10.: Er wurde in `~/crm-umbau` entwickelt
+(Git-Klon mit dem Server als Gegenstelle) und von dort ausgeliefert. Das Repository hätte
+ihn bei der nächsten Auslieferung überschrieben. Jetzt übernommen, abgeglichen per Prüfsumme
+gegen `/opt/crm` am 03.11.2026 um 16:37:
+
+- Umbau 1: Hinweis-Banner für die Testinstanz, Titel CRM · Digitale Konzepte
+- Umbau 2/2a: Beziehung je Unternehmen (Mandant, Netzwerk, Lieferant, Eigenes Unternehmen) – Migration 013
+- Umbau 3: Beteiligte (Netzwerk-Unternehmen je Mandant mit Rolle) – Migration 014
+- Umbau 4: Verträge bei Lieferanten mit Kündigungstermin – Migration 015
+- Umbau 5: Aufgaben ohne Projekt, Herkunft je Aufgabe – Migration 016
+- Umbau 6: Sammelprojekte ohne Wert aufgelöst – Migration 017
+- Umbau 7: Projektphasen (Anbahnung, Angebot raus, Läuft, Abgeschlossen, Verloren) – Migration 018
+- Umbau 8: Honorarart, Honorar, Verlustgrund, Lexware-Nr. je Projekt – Migration 019
+- Umbau 9: Mail-Review mit Liste und Detail, Status Offen/Später/Erledigt – Migration 020
+- Umbau 10: Mail-Review erkennt Fristen, Zeeg-Terminbuchungen, mehrere Unternehmen – Migration 021
+- Umbau 11/11a: Heute als Startseite, Google-Kalender per iCal nur lesend (`kalender.py`) – Migration 022
+- Umbau 12: Neue Dateien in Kundenordnern als Journal-Eintrag Dokument – Migration 023
+- Umbau 13: Recherche über alle Bereiche als eigener Menüpunkt
+- Umbau 14: Mail-Abruf merkt sich das Postfach, Nachholen von Hand (`mail_poller.py --nachholen TAGE`)
+
+Dateien: `CPX12-Postgres/` crm_core.py, crm_serve.py, mail_poller.py, wissen_sync.py, acos_sync.py,
+kalender.py (neu); Dienste crm.service und crm-mailpoll.service auf den echten Pfad `/opt/crm`
+zurückgestellt; neu im Repository crm-backup.service/.timer (Datenbank-Backup 22:30, Skript
+`/usr/local/bin/crm-backup.sh`) und crm-umbau.service (Testinstanz, Port 8081, `crm_test`).
+`Migration-Postgres/` migration_013 bis migration_023 (Namen angeglichen, Inhalt unverändert),
+smoke_test.py an den Umbau angepasst (Aufgabe ohne Projekt erlaubt, Phasen statt alter Status).
+config.json: Abrufintervall 5 Minuten wie auf dem Server.
+
+Nicht übernommen: die alten Markdown-Skripte, die in `/opt/crm` noch liegen (`crm_server.py`,
+`crm_add.py`, `task_cli.py` usw.). Der laufende Dienst nutzt sie nicht.
+
+Getestet in der Sandbox gegen `crm_test` mit Migrationen 002–023: `smoke_test.py` 84/84 grün,
+`test_kundenwissen_acos.py` 11/11 grün.
+
+**Ab jetzt gilt:** Entwickelt und ausgeliefert wird aus `crm-code-upload`. `~/crm-umbau` ist Archiv.

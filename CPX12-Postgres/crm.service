@@ -6,8 +6,8 @@ After=network.target
 Type=simple
 User=crmapp
 Group=crmapp
-WorkingDirectory=/opt/crm-repo/CPX12-Postgres
-ExecStart=/usr/bin/python3 /opt/crm-repo/CPX12-Postgres/crm_serve.py
+WorkingDirectory=/opt/crm
+ExecStart=/usr/bin/python3 /opt/crm/crm_serve.py
 Restart=on-failure
 RestartSec=3
 Environment=CRM_HOST=127.0.0.1

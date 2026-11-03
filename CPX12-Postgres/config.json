@@ -19,7 +19,7 @@
   "mail": {
     "enabled": true,
     "_hinweis": "mail.env ist ausgefuellt (2026-08-04) - Anbindung aktiv, sobald diese Config + secrets/mail.env auf dem Server liegen und crm-mailpoll laeuft.",
-    "poll_interval_minutes": 10,
+    "poll_interval_minutes": 5,
     "credentials_file": "secrets/mail.env",
     "raw_mail_retention_days": 90,
     "auto_task_creation": false,

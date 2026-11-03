@@ -116,12 +116,13 @@ def main():
         c.req("POST", "/api/tasks", {"title": "Smoketest-Aufgabe", "projekt_id": opp_id, "status": "Offen"})
     step("Aufgabe anlegen (mit projekt_id)", _create_task)
 
-    def _create_task_without_projekt_should_fail():
-        try:
-            c.req("POST", "/api/tasks", {"title": "Aufgabe ohne Projekt"}, expect=500)
-        except AssertionError:
-            raise
-    step("Aufgabe OHNE projekt_id schlaegt erwartungsgemaess fehl", _create_task_without_projekt_should_fail)
+    def _create_task_without_projekt():
+        # Seit Umbau 5 (Migration 016) erlaubt: eigene Aufgabe ohne Projekt
+        c.req("POST", "/api/tasks", {"title": "Aufgabe ohne Projekt"})
+        t = next((x for x in c.req("GET", "/api/tasks") if x["title"] == "Aufgabe ohne Projekt"), None)
+        assert t and not t.get("projektId"), t
+        c.req("DELETE", f"/api/tasks/{t['taskId']}")
+    step("Aufgabe ohne Projekt anlegen und wieder loeschen (Umbau 5)", _create_task_without_projekt)
 
     tasks = step("Aufgaben laden + neue Aufgabe finden", lambda: c.req("GET", "/api/tasks"))
     task = next((t for t in tasks if t["title"] == "Smoketest-Aufgabe" and str(t["projektId"]) == str(opp_id)), None)
@@ -267,7 +268,7 @@ def main():
         r = c.req("POST", f"/api/journal/{jid}/aktion", {"typ": "projekt", "name": "Projekt aus Journal", "status": "lead"})
         assert r["eintrag"]["projekt"] == "Projekt aus Journal", r
         pr = next(o for o in c.req("GET", "/api/opportunities") if o["title"] == "Projekt aus Journal")
-        assert pr["kontakt"] == firma and pr["status"] == "lead" and pr["ansprechpartner"] == "Neue Kontaktperson", pr
+        assert pr["kontakt"] == firma and pr["status"] == "anbahnung" and pr["ansprechpartner"] == "Neue Kontaktperson", pr
         c.req("DELETE", f"/api/opportunities/{pr['id']}")
         r = c.req("POST", f"/api/journal/{jid}/aktion", {"typ": "firma", "name": "Journal Neufirma GmbH", "zuordnen": True})
         assert r["eintrag"]["firma"] == "Journal Neufirma GmbH" and r["eintrag"]["person"] == "", r
@@ -294,11 +295,11 @@ def main():
         return e
     e0 = step("Einstellungen laden", _check_settings_defaults)
     step("Persoenlich speichern", lambda: c.req("PUT", "/api/einstellungen/persoenlich",
-         {"startansicht": "journal", "akzent": "petrol", "projekt_status": ["aktiv"]}))
+         {"startansicht": "journal", "akzent": "petrol", "projekt_status": ["laeuft"]}))
     step("Unbekannte Startansicht abgelehnt", lambda: c.req("PUT", "/api/einstellungen/persoenlich", {"startansicht": "quatsch"}, expect=400))
     def _check_dashboard_user():
         html = c.req("GET", "/")
-        assert "#0f766e" in html and '"startansicht": "journal"' in html and '"projekt_status": ["aktiv"]' in html
+        assert "#0f766e" in html and '"startansicht": "journal"' in html and '"projekt_status": ["laeuft"]' in html
     step("Dashboard uebernimmt Farbe, Startansicht, Projektfilter", _check_dashboard_user)
     step("System speichern", lambda: c.req("PUT", "/api/einstellungen/system",
          {"auto_archiv_tage": 7, "mail_intervall": 15, "mail_aktiv": False, "ki_bewertung": False}))
@@ -460,6 +461,16 @@ def main():
         assert c.req("GET", "/api/heute/tag")["abschluss"]["datum"] == a["datum"]
         assert c.req("GET", "/api/tagesabschluss")["abschluesse"][0]["datum"] == a["datum"]
     step("Tagesabschluss: Heute laden, abschliessen, Briefing", _tagesabschluss)
+
+    # ── Kundenwissen: ACOS-Dokumente als Verweis (03.11.2026) ──
+    def _kw_acos_dok():
+        d = c.req("GET", f"/api/contacts/{contact_id}/kundenwissen")
+        assert isinstance(d.get("acos_dokumente"), list), d.keys()
+        for x in d["acos_dokumente"]:
+            assert x["quelle"] == "acos_dok" and "inhalt" not in x and "link" in x, x
+        t = c.req("GET", f"/api/contacts/{contact_id}/kundenwissen?q=Smoketest")
+        assert isinstance(t.get("treffer"), list), t.keys()
+    step("Kundenwissen: Liste mit ACOS-Dokumenten, Suche", _kw_acos_dok)
     step("Dashboard laedt nach allen Aenderungen", lambda: c.req("GET", "/"))
 
     step("Logout", lambda: c.req("POST", "/api/logout"))

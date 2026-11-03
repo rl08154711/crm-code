@@ -6,8 +6,8 @@ After=network.target crm.service
 Type=simple
 User=crmapp
 Group=crmapp
-WorkingDirectory=/opt/crm-repo/CPX12-Postgres
-ExecStart=/usr/bin/python3 /opt/crm-repo/CPX12-Postgres/mail_poller.py
+WorkingDirectory=/opt/crm
+ExecStart=/usr/bin/python3 /opt/crm/mail_poller.py
 Restart=on-failure
 RestartSec=10
 Environment=CRM_PORT=8080

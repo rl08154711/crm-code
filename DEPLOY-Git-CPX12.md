@@ -45,6 +45,10 @@ kann er damit nichts verändern.
 | `/opt/crm` | Die bisherige Installation: alter Code, die Markdown-Altdaten, `secrets/`. Bleibt als Rückfallposition liegen. |
 
 Die Dienste zeigen nach der Umstellung auf `/opt/crm-repo/CPX12-Postgres/`.
+Die Unit-Dateien im Repository geben bis dahin den Live-Stand wieder und zeigen auf
+`/opt/crm` (abgeglichen 03.11.2026). Bei der Umstellung in `crm.service`,
+`crm-mailpoll.service` und den Timer-Diensten `WorkingDirectory` und `ExecStart` auf
+`/opt/crm-repo/CPX12-Postgres/` ändern und `systemctl daemon-reload` ausführen.
 Bewusst kein Symlink von `/opt/crm` dorthin: Ein `systemctl status crm` soll
 ohne Umweg zeigen, welche Datei tatsächlich läuft.
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=CRM Umbau-Testinstanz (Port 8081, Datenbank crm_test)
+After=network.target postgresql.service
+[Service]
+User=crmapp
+Group=crmapp
+WorkingDirectory=/opt/crm-umbau
+ExecStart=/usr/bin/python3 /opt/crm-umbau/crm_serve.py
+Environment=CRM_HOST=127.0.0.1
+Environment=CRM_PORT=8081
+Environment=CRM_DB_NAME=crm_test
+Environment=CRM_COOKIE_SECURE=0
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=CRM Datenbank-Backup taeglich 22:30
+[Timer]
+OnCalendar=*-*-* 22:30:00 Europe/Berlin
+Persistent=true
+[Install]
+WantedBy=timers.target

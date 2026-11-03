@@ -186,10 +186,10 @@ def _resolve_person_id(name, firma_id=None):
     return row["id"] if row else None
 
 TASK_SELECT = """
-    SELECT t.*, p.name AS projekt_name, f.name AS firma_name, per.name AS person_name
+    SELECT t.*, p.name AS projekt_name, f.id AS firma_id_eff, f.name AS firma_name, per.name AS person_name
     FROM tasks t
-    JOIN projekte p ON p.id = t.projekt_id
-    LEFT JOIN firmen f ON f.id = p.firma_id
+    LEFT JOIN projekte p ON p.id = t.projekt_id
+    LEFT JOIN firmen f ON f.id = COALESCE(t.firma_id, p.firma_id)
     LEFT JOIN personen per ON per.id = p.person_id
 """
 
@@ -216,6 +216,8 @@ def _task_row(r):
         "quelle_mail_id": r["quelle_mail_id"],
         "projektId": r["projekt_id"],
         "projekt": r["projekt_name"] or "",
+        "firmaId": str(r["firma_id_eff"]) if r.get("firma_id_eff") else "",
+        "herkunft": r.get("herkunft") or ("mail" if r["quelle_mail_id"] else "manuell"),
     }
 
 
@@ -237,7 +239,7 @@ def _projekt_row(r):
         "id": str(r["id"]),
         "title": r["name"] or "",
         "kontakt": r["firma_name"] or "",
-        "status": r["status"] or "aktiv",
+        "status": r["status"] or "anbahnung",
         "value": _fmt_money(r["value"]),
         "probability": str(r["probability"]) if r["probability"] is not None else "",
         "next_action": r["next_action"] or "",
@@ -246,8 +248,234 @@ def _projekt_row(r):
         "ansprechpartner": r["person_name"] or "",
         "summary": r["beschreibung"] or "",
         "firmaId": r["firma_id"],
+        "honorarart": r.get("honorarart") or "offen",
+        "honorar": r.get("honorar") or "",
+        "honorar_kurz": _honorar_kurz(r.get("honorarart"), r.get("honorar")),
+        "verlustgrund": r.get("verlustgrund") or "",
+        "verlustgrund_label": VERLUSTGRUENDE.get(r.get("verlustgrund") or "", ""),
+        "verlust_notiz": r.get("verlust_notiz") or "",
+        "lexware_ref": r.get("lexware_ref") or "",
     }
 
+
+# ── BEZIEHUNG (Umbau Schritt 2, Migration 013, 2026-10-31) ──
+ARTEN = {"mandant": "Mandant", "netzwerk": "Netzwerk", "lieferant": "Lieferant", "intern": "Eigenes Unternehmen"}
+ART_FARBEN = {"netzwerk": "#7c3aed", "lieferant": "#0f766e", "intern": "#475569"}
+STATUS_FUER_ART = {"netzwerk": "netzwerk", "lieferant": "dienstleister", "intern": "intern"}
+_SPALTEN_CACHE = {}
+
+def _spalte_da(tabelle, spalte):
+    """True, wenn die Spalte existiert. Positiv gecacht; nach einer Migration
+    wird der Dienst ohnehin neu gestartet."""
+    key = (tabelle, spalte)
+    if not _SPALTEN_CACHE.get(key):
+        _SPALTEN_CACHE[key] = bool(_q1(
+            "SELECT 1 AS x FROM information_schema.columns WHERE table_schema='public' "
+            "AND table_name=%s AND column_name=%s", (tabelle, spalte)))
+    return _SPALTEN_CACHE[key]
+
+def _art_aus_status(status):
+    st = [x.strip().lower() for x in (status or "").split(",")]
+    if "intern" in st:
+        return "intern"
+    if "netzwerk" in st or "partner" in st:
+        return "netzwerk"
+    if "dienstleister" in st or "lieferant" in st:
+        return "lieferant"
+    return "mandant"
+
+def _art(f):
+    """Art der Beziehung; ohne Migration 013 aus dem Status abgeleitet."""
+    a = (f.get("art") or "").strip().lower()
+    return a if a in ARTEN else _art_aus_status(f.get("status"))
+
+def _beziehung_html(c):
+    """Badge fuer die Unternehmensliste: Mandanten zeigen ihren Status,
+    alle anderen die Art plus Funktion (z. B. Netzwerk · Hausbank)."""
+    if c["art"] == "mandant":
+        return status_badge(c["status"])
+    txt = ARTEN[c["art"]] + (" · " + c["funktion"] if c.get("funktion") else "")
+    return badge(_h(txt), ART_FARBEN.get(c["art"], "#475569"))
+
+# ── BETEILIGTE (Umbau Schritt 3, Migration 014, 2026-10-31) ──
+BETEILIGUNG_ROLLEN = ("Hausbank", "Steuerberatung", "Rechtsberatung", "Wirtschaftsprüfung",
+                      "Fördermittelgeber", "Bürgschaftsbank", "Kooperationspartner")
+
+def _erster_kontakt(firma_id):
+    r = _q1("SELECT name FROM personen WHERE firma_id=%s AND archiviert_am IS NULL ORDER BY id LIMIT 1", (firma_id,))
+    return (r or {}).get("name") or ""
+
+def load_beteiligte(firma_id, art):
+    """Netzwerk-Unternehmen: die Mandanten, fuer die es zustaendig ist.
+    Mandant: die beteiligten Netzwerk-Unternehmen (Hausbank, Steuerbuero ...)."""
+    leer = {"verfuegbar": False, "eintraege": [], "optionen": [], "rollen": list(BETEILIGUNG_ROLLEN)}
+    if art not in ("netzwerk", "mandant") or not _tabelle_da("beteiligung"):
+        return leer
+    eigen, fremd, gegenart = (("netzwerk_firma_id", "mandant_firma_id", "mandant") if art == "netzwerk"
+                              else ("mandant_firma_id", "netzwerk_firma_id", "netzwerk"))
+    rows = _q(f"""SELECT b.id, b.rolle, f.id AS firma_id, f.name FROM beteiligung b
+                  JOIN firmen f ON f.id = b.{fremd}
+                  WHERE b.{eigen}=%s AND b.archiviert_am IS NULL AND f.archiviert_am IS NULL
+                  ORDER BY f.name, b.rolle""", (int(firma_id),))
+    optionen = _q("SELECT id, name FROM firmen WHERE archiviert_am IS NULL AND art=%s AND id<>%s ORDER BY name",
+                  (gegenart, int(firma_id)))
+    return {
+        "verfuegbar": True,
+        "eintraege": [{"id": r["id"], "rolle": r["rolle"], "firma_id": str(r["firma_id"]), "firma": r["name"],
+                       "kontakt": _erster_kontakt(r["firma_id"])} for r in rows],
+        "optionen": [{"id": str(o["id"]), "name": o["name"]} for o in optionen],
+        "rollen": list(BETEILIGUNG_ROLLEN),
+    }
+
+def create_beteiligung(body):
+    try:
+        netz_id, mand_id = int(body.get("netzwerk_firma_id")), int(body.get("mandant_firma_id"))
+    except (TypeError, ValueError):
+        raise ValueError("Bitte zwei Unternehmen angeben.")
+    rolle = (body.get("rolle") or "").strip()
+    if not rolle:
+        raise ValueError("Bitte eine Rolle angeben, z. B. Hausbank.")
+    if netz_id == mand_id:
+        raise ValueError("Ein Unternehmen kann nicht an sich selbst beteiligt sein.")
+    netz = _q1("SELECT id, art FROM firmen WHERE id=%s AND archiviert_am IS NULL", (netz_id,))
+    mand = _q1("SELECT id, art FROM firmen WHERE id=%s AND archiviert_am IS NULL", (mand_id,))
+    if not netz or not mand:
+        raise ValueError("Unternehmen nicht gefunden.")
+    if netz["art"] != "netzwerk":
+        raise ValueError("Beteiligt sein kann nur ein Unternehmen mit der Beziehung Netzwerk.")
+    if mand["art"] != "mandant":
+        raise ValueError("Zugeordnet werden kann nur ein Mandant.")
+    r = _x("""INSERT INTO beteiligung (netzwerk_firma_id, mandant_firma_id, rolle) VALUES (%s,%s,%s)
+              ON CONFLICT (netzwerk_firma_id, mandant_firma_id, rolle) DO UPDATE SET archiviert_am = NULL
+              RETURNING id""", (netz_id, mand_id, rolle))[0]
+    _audit("beteiligung", r["id"], "insert", neu={"netzwerk_firma_id": netz_id, "mandant_firma_id": mand_id, "rolle": rolle})
+    return {"id": r["id"]}
+
+def loese_beteiligung(bet_id):
+    row = _q1("SELECT * FROM beteiligung WHERE id=%s", (int(bet_id),))
+    if not row:
+        raise FileNotFoundError(f"Beteiligung nicht gefunden: {bet_id}")
+    _x("UPDATE beteiligung SET archiviert_am = now() WHERE id=%s", (row["id"],))
+    _audit("beteiligung", row["id"], "archiv", alt=dict(row))
+
+# ── PROJEKTPHASEN (Umbau Schritt 7, Migration 018, 2026-10-31) ──
+PROJEKT_PHASEN = {"anbahnung": "Anbahnung", "angebot": "Angebot raus", "laeuft": "Läuft",
+                  "abgeschlossen": "Abgeschlossen", "verloren": "Verloren"}
+PHASEN_OFFEN = ("anbahnung", "angebot", "laeuft")
+_PHASE_ALT = {"lead": "anbahnung", "aktiv": "laeuft", "won": "laeuft", "pausiert": "laeuft", "kunde": "laeuft",
+              "inaktiv": "abgeschlossen", "lost": "verloren"}
+
+# ── HONORAR UND VERLUSTGRUND (Umbau Schritt 8, Migration 019, 2026-10-31) ──
+HONORARARTEN = {"pauschal": "Pauschal", "zeit": "Zeithonorar", "laufend": "Laufend (Monat/Quartal)",
+                "gebuehr_provision": "Bearbeitungsgebühr + Erfolgsprovision", "provision": "Nur Erfolgsprovision",
+                "offen": "Noch offen"}
+VERLUSTGRUENDE = {"preis": "Preis", "kein_bedarf": "Kein Bedarf mehr", "anderer_berater": "Anderer Berater",
+                  "keine_rueckmeldung": "Keine Rückmeldung", "abgelehnt": "Förderung/Finanzierung abgelehnt",
+                  "insolvent": "Unternehmen insolvent/aufgegeben"}
+
+def _honorar_kurz(art, text):
+    art = art or "offen"
+    text = (text or "").strip()
+    if art == "offen":
+        return text or "noch offen"
+    return HONORARARTEN.get(art, art) + (f" · {text}" if text else "")
+
+def _projekt_extra(body):
+    """Honorar-, Verlust- und Lexware-Felder aus einem Request; nur Schluessel, die im Body stehen."""
+    if not _spalte_da("projekte", "honorarart"):
+        return {}
+    werte = {}
+    if "honorarart" in body:
+        a = (body.get("honorarart") or "offen").strip()
+        werte["honorarart"] = a if a in HONORARARTEN else "offen"
+    if "verlustgrund" in body:
+        g = (body.get("verlustgrund") or "").strip()
+        werte["verlustgrund"] = g if g in VERLUSTGRUENDE else None
+    for k in ("honorar", "verlust_notiz", "lexware_ref"):
+        if k in body:
+            werte[k] = (body.get(k) or "").strip() or None
+    return werte
+
+def _phase(wert):
+    """Neue Phase aus beliebiger Eingabe; alte Statuswerte werden uebersetzt."""
+    w = (wert or "").split(",")[0].strip().lower()
+    return w if w in PROJEKT_PHASEN else _PHASE_ALT.get(w, "anbahnung")
+
+def _naechster_schritt_html(o, offene_aufgabe=None):
+    """Naechster Schritt eines Projekts fuer Liste und Phasen-Spalten:
+    erste offene Aufgabe, sonst der eingetragene naechste Schritt, sonst ein Hinweis."""
+    if offene_aufgabe:
+        dl = offene_aufgabe.get("deadline") or ""
+        datum = f' · {dl[8:10]}.{dl[5:7]}.' if len(dl) >= 10 else ""
+        return f'<span class="pb-next">{_h(offene_aufgabe["title"])}{datum}</span>'
+    if o.get("next_action"):
+        return f'<span class="pb-next">{_h(o["next_action"])}</span>'
+    if _phase(o.get("status")) in PHASEN_OFFEN:
+        return '<span class="pb-ohne">Kein nächster Schritt</span>'
+    return '<span style="color:#9ca3af">–</span>'
+
+# ── VERTRAEGE BEI LIEFERANTEN (Umbau Schritt 4, Migration 015, 2026-10-31) ──
+VERTRAG_FELDER = ("bezeichnung", "kundennummer", "kosten", "laufzeit", "kuendigungsfrist", "kuendbar_bis", "notiz")
+
+def _vertrag_row(r):
+    return {"id": r["id"], "bezeichnung": r["bezeichnung"] or "", "kundennummer": r["kundennummer"] or "",
+            "kosten": r["kosten"] or "", "laufzeit": r["laufzeit"] or "", "kuendigungsfrist": r["kuendigungsfrist"] or "",
+            "kuendbar_bis": _d(r["kuendbar_bis"]), "notiz": r["notiz"] or ""}
+
+def load_vertraege(firma_id, art):
+    if art != "lieferant" or not _tabelle_da("vertrag"):
+        return {"verfuegbar": False, "eintraege": []}
+    rows = _q("""SELECT * FROM vertrag WHERE firma_id=%s AND archiviert_am IS NULL
+                 ORDER BY kuendbar_bis NULLS LAST, bezeichnung""", (int(firma_id),))
+    return {"verfuegbar": True, "eintraege": [_vertrag_row(r) for r in rows]}
+
+def _vertrag_werte(body):
+    werte = {}
+    for k in VERTRAG_FELDER:
+        if k in body:
+            v = (body.get(k) or "").strip()
+            werte[k] = v or None
+    if "bezeichnung" in werte and not werte["bezeichnung"]:
+        raise ValueError("Bitte eine Bezeichnung angeben, z. B. Webhosting.")
+    if werte.get("kuendbar_bis"):
+        try:
+            date.fromisoformat(werte["kuendbar_bis"])
+        except ValueError:
+            raise ValueError("Das Datum ist ungültig.")
+    return werte
+
+def create_vertrag(firma_id, body):
+    f = _q1("SELECT id, art FROM firmen WHERE id=%s AND archiviert_am IS NULL", (int(firma_id),))
+    if not f:
+        raise FileNotFoundError(f"Firma nicht gefunden: {firma_id}")
+    if _art(f) != "lieferant":
+        raise ValueError("Verträge gibt es nur bei Lieferanten.")
+    werte = _vertrag_werte(body)
+    if not werte.get("bezeichnung"):
+        raise ValueError("Bitte eine Bezeichnung angeben, z. B. Webhosting.")
+    spalten = ["firma_id"] + list(werte)
+    r = _x(f"INSERT INTO vertrag ({', '.join(spalten)}) VALUES ({', '.join(['%s'] * len(spalten))}) RETURNING id",
+           [f["id"]] + list(werte.values()))[0]
+    _audit("vertrag", r["id"], "insert", neu=werte)
+    return {"id": r["id"]}
+
+def update_vertrag(vertrag_id, body):
+    row = _q1("SELECT * FROM vertrag WHERE id=%s", (int(vertrag_id),))
+    if not row:
+        raise FileNotFoundError(f"Vertrag nicht gefunden: {vertrag_id}")
+    werte = _vertrag_werte(body)
+    if not werte:
+        return
+    sets = [f"{k}=%s" for k in werte] + ["updated_at=now()"]
+    _x(f"UPDATE vertrag SET {', '.join(sets)} WHERE id=%s", list(werte.values()) + [row["id"]])
+    _audit("vertrag", row["id"], "update", alt=dict(row), neu=werte)
+
+def archiviere_vertrag(vertrag_id):
+    row = _q1("SELECT * FROM vertrag WHERE id=%s", (int(vertrag_id),))
+    if not row:
+        raise FileNotFoundError(f"Vertrag nicht gefunden: {vertrag_id}")
+    _x("UPDATE vertrag SET archiviert_am = now() WHERE id=%s", (row["id"],))
+    _audit("vertrag", row["id"], "archiv", alt=dict(row))
 
 def load_contacts():
     """Lädt Firmen + verknüpfte Personen (bisher Firmen/*.md + Personen/*.md)."""
@@ -291,6 +519,8 @@ def load_contacts():
             "address":             f["address"] or "",
             "phone_central":       f.get("telefon_zentrale") or "",
             "acos_fuehren":        bool(f.get("acos_fuehren")),
+            "art":                 _art(f),
+            "funktion":            f.get("funktion") or "",
             "notes":               "",
         })
     return contacts
@@ -682,7 +912,7 @@ function jeAktionForm(typ){
       <p class="je-hinweis">Der Text dieses Eintrags kommt als Notiz an die Aufgabe.</p>`,
     projekt: `<h4>＋ Projekt bei ${_jE(e.firma)}</h4><div class="form-grid">
       <div class="form-row full"><label>Projektname *</label><input id="ja-name"></div>
-      <div class="form-row"><label>Status</label><select id="ja-status"><option value="lead">Angebahnt</option><option value="aktiv">Aktiv</option></select></div>
+      <div class="form-row"><label>Phase</label><select id="ja-status"><option value="anbahnung">Anbahnung</option><option value="angebot">Angebot raus</option><option value="laeuft">Läuft</option></select></div>
       <div class="form-row"><label>Nächster Schritt</label><input id="ja-next"></div></div>
       <p class="je-hinweis">Das Projekt wird angelegt und mit diesem Eintrag verknüpft.</p>`,
   };
@@ -1006,10 +1236,107 @@ function acosAbgleichStarten(){
 
 AKTE_JS = r"""
 // ── AKTE: Seitenleiste je Unternehmen (UX-Sprint 2026-10-24) ─────────
-const AK_STATUS = ['lead','interessent','kunde','netzwerk','partner','dienstleister','aktiv','inaktiv'];
+const AK_STATUS = ['lead','interessent','kunde','aktiv','inaktiv'];
+const AK_ARTFARBE = { netzwerk:'#7c3aed', lieferant:'#0f766e', intern:'#475569' };
+const AK_ART_STATUS = { netzwerk:'netzwerk', lieferant:'dienstleister', intern:'intern' };
+function _akBeziehung(d){
+  const art = d.art || 'mandant';
+  if(art === 'mandant') return _akBadge(d.status);
+  const f = AK_ARTFARBE[art] || '#475569';
+  const txt = ((d.arten||{})[art] || art) + (d.funktion ? ' · ' + d.funktion : '');
+  return `<span class="ak-badge" style="color:${f};border-color:${f}33;background:${f}14">${_akE(txt)}</span>`;
+}
+function akteArtWechsel(){
+  const el = document.querySelector('input[name=ak-art]:checked');
+  const art = el ? el.value : 'mandant';
+  const sf = document.getElementById('ak-status-feld'), ff = document.getElementById('ak-funktion-feld');
+  if(sf) sf.hidden = art !== 'mandant';
+  if(ff){ ff.hidden = art === 'mandant'; const l = ff.querySelector('.ak-flabel'); if(l) l.textContent = art === 'lieferant' ? 'Leistung' : 'Funktion'; }
+}
+function _akBeteiligte(d){
+  const b = d.beteiligte;
+  if(!b || !b.verfuegbar) return '';
+  const netz = d.art === 'netzwerk';
+  const offen = _AK.form === 'beteiligt';
+  let h = `<section><div class="ak-kz"><h3>${netz ? 'Zuständig für' : 'Beteiligte'}</h3><button type="button" class="ak-link" onclick="akteForm('beteiligt')">${offen ? 'Schließen' : (netz ? '＋ Mandant zuordnen' : '＋ Beteiligte')}</button></div>`;
+  if(offen){
+    h += `<div class="ak-form">
+      <label class="ak-feld">${netz ? 'Mandant' : 'Netzwerk-Unternehmen'}<select id="akb-firma" data-autofocus><option value="">Bitte wählen …</option>${b.optionen.map(o=>`<option value="${_akE(o.id)}">${_akE(o.name)}</option>`).join('')}</select></label>
+      <label class="ak-feld">Rolle<input id="akb-rolle" list="akb-rollen" placeholder="z. B. Hausbank"><datalist id="akb-rollen">${(b.rollen||[]).map(r=>`<option value="${_akE(r)}">`).join('')}</datalist></label>
+      <div class="ak-fuss ak-voll"><span class="ak-meldung" id="akb-msg"></span>
+        <button type="button" class="ak-btn" onclick="akteForm('beteiligt')">Abbrechen</button>
+        <button type="button" class="ak-prim" onclick="akteBeteiligtSpeichern()">Zuordnen</button></div></div>`;
+    if(!b.optionen.length) h += `<p class="ak-hinweis">${netz ? 'Es gibt noch kein Unternehmen mit der Beziehung Mandant.' : 'Es gibt noch kein Unternehmen mit der Beziehung Netzwerk. Lege die Bank oder das Steuerbüro zuerst an und stelle die Beziehung auf Netzwerk.'}</p>`;
+  }
+  h += b.eintraege.length ? b.eintraege.map(e=>`<div class="ak-bet"><span class="ak-bet-rolle">${_akE(e.rolle)}</span><button type="button" class="ak-link ak-bet-firma" onclick="openAkte('${_akE(e.firma_id)}')">${_akE(e.firma)}</button><span class="ak-bet-kontakt">${_akE(e.kontakt)}</span><button type="button" class="ak-bet-weg" title="Zuordnung lösen" aria-label="Zuordnung zu ${_akE(e.firma)} lösen" onclick="akteBeteiligtLoesen(${Number(e.id)})">×</button></div>`).join('')
+    : `<p class="ak-leer">${netz ? 'Noch keinem Mandanten zugeordnet.' : 'Keine Beteiligten erfasst.'}</p>`;
+  return h + '</section>';
+}
+const AK_VFELDER = [['bezeichnung','Bezeichnung','z. B. Webhosting, Domain, Visitenkarten'],['kundennummer','Kundennummer',''],
+  ['kosten','Kosten','z. B. 29,90 € im Monat'],['laufzeit','Laufzeit','z. B. 12 Monate, verlängert sich jährlich'],
+  ['kuendigungsfrist','Kündigungsfrist','z. B. 1 Monat zum Laufzeitende'],['kuendbar_bis','Kündigen spätestens am',''],['notiz','Notiz','']];
+function _akVTage(iso){ if(!iso) return null; const t = new Date(iso + 'T00:00:00'), h = new Date(); h.setHours(0,0,0,0); return Math.round((t - h) / 864e5); }
+function _akVertraege(d){
+  const v = d.vertraege;
+  if(!v || !v.verfuegbar) return '';
+  const neu = _AK.form === 'vertrag:neu';
+  let h = `<section><div class="ak-kz"><h3>Verträge</h3><button type="button" class="ak-link" onclick="akteForm('vertrag:neu')">${neu ? 'Schließen' : '＋ Vertrag'}</button></div>`;
+  if(neu) h += _akVertragForm(null);
+  h += v.eintraege.length ? v.eintraege.map(x=>{
+    if(_AK.form === 'vertrag:' + x.id) return _akVertragForm(x);
+    const tage = _akVTage(x.kuendbar_bis);
+    const frist = x.kuendbar_bis ? `<span class="ak-vfrist ${tage !== null && tage <= 60 ? (tage < 0 ? 'vorbei' : 'bald') : ''}">${tage !== null && tage < 0 ? 'Kündigungstermin verstrichen' : 'kündigen bis ' + _akD(x.kuendbar_bis)}${tage !== null && tage >= 0 && tage <= 60 ? ' · noch ' + tage + ' Tage' : ''}</span>` : '';
+    const z = (l, w) => w ? `<dt>${l}</dt><dd>${_akE(w)}</dd>` : '';
+    return `<div class="ak-vertrag"><div class="ak-kz"><strong>${_akE(x.bezeichnung)}</strong>${frist}
+        <span class="ak-vaktion"><button type="button" class="ak-link" onclick="akteForm('vertrag:${Number(x.id)}')">Bearbeiten</button>
+        <button type="button" class="ak-bet-weg" title="Vertrag entfernen" aria-label="Vertrag ${_akE(x.bezeichnung)} entfernen" onclick="akteVertragArchivieren(${Number(x.id)})">×</button></span></div>
+      <dl class="ak-dl">${z('Kundennummer', x.kundennummer)}${z('Kosten', x.kosten)}${z('Laufzeit', x.laufzeit)}${z('Kündigungsfrist', x.kuendigungsfrist)}${z('Notiz', x.notiz)}</dl></div>`;
+  }).join('') : (neu ? '' : '<p class="ak-leer">Noch kein Vertrag erfasst.</p>');
+  h += '<p class="ak-hinweis">Rechnungen und Zahlungen laufen in Lexware Office. Hier steht nur, was du für Kündigung und Nachbestellung brauchst.</p>';
+  return h + '</section>';
+}
+function _akVertragForm(x){
+  const w = x || {};
+  return `<div class="ak-form ak-vertrag">${AK_VFELDER.map(([k,l,ph])=>
+      `<label class="ak-feld ${k==='bezeichnung'||k==='notiz'?'ak-voll':''}">${l}<input id="akv-${k}" ${k==='kuendbar_bis'?'type="date"':''} value="${_akE(w[k]||'')}" placeholder="${_akE(ph)}" ${k==='bezeichnung'?'data-autofocus':''}></label>`).join('')}
+    <div class="ak-fuss ak-voll"><span class="ak-meldung" id="akv-msg"></span>
+      <button type="button" class="ak-btn" onclick="akteForm('${x ? 'vertrag:' + Number(x.id) : 'vertrag:neu'}')">Abbrechen</button>
+      <button type="button" class="ak-prim" onclick="akteVertragSpeichern(${x ? Number(x.id) : 'null'})">Speichern</button></div></div>`;
+}
+function akteVertragSpeichern(id){
+  const body = {}; AK_VFELDER.forEach(([k])=>{ body[k] = document.getElementById('akv-' + k).value.trim(); });
+  const msg = t => { const el = document.getElementById('akv-msg'); if(el) el.textContent = t; };
+  if(!body.bezeichnung){ msg('Bitte eine Bezeichnung angeben.'); return; }
+  const req = id ? api('PUT', '/api/vertraege/' + id, body) : api('POST', '/api/contacts/' + encodeURIComponent(_AK.id) + '/vertraege', body);
+  req.then(()=>{ _AK.form = null; return akteLaden(); }).catch(t=>msg(_akFehler(t)));
+}
+function akteVertragArchivieren(id){
+  if(!confirm('Vertrag entfernen? Er bleibt im Änderungsprotokoll nachvollziehbar.')) return;
+  api('DELETE', '/api/vertraege/' + id).then(()=>akteLaden()).catch(t=>alert(_akFehler(t)));
+}
+function akteBeteiligtSpeichern(){
+  const fid = document.getElementById('akb-firma').value, rolle = document.getElementById('akb-rolle').value.trim();
+  const msg = t => { const el = document.getElementById('akb-msg'); if(el) el.textContent = t; };
+  if(!fid || !rolle){ msg('Bitte Unternehmen und Rolle angeben.'); return; }
+  const netz = _AK.d.art === 'netzwerk';
+  const body = netz ? { netzwerk_firma_id: _AK.id, mandant_firma_id: fid, rolle: rolle }
+                    : { netzwerk_firma_id: fid, mandant_firma_id: _AK.id, rolle: rolle };
+  api('POST', '/api/beteiligung', body).then(()=>{ _AK.form = null; return akteLaden(); }).catch(t=>msg(_akFehler(t)));
+}
+function akteBeteiligtLoesen(id){
+  if(!confirm('Zuordnung lösen? Sie bleibt im Änderungsprotokoll nachvollziehbar.')) return;
+  api('DELETE', '/api/beteiligung/' + id).then(()=>akteLaden()).catch(t=>alert(_akFehler(t)));
+}
+function filterArt(tblId, art){
+  document.querySelectorAll('#' + tblId + ' tbody tr[data-art]').forEach(tr=>{
+    tr.classList.toggle('art-aus', !!art && tr.dataset.art !== art);
+  });
+}
 const AK_FARBE = { offen:'#b45309', lead:'#b45309', kunde:'#15803d', aktiv:'#1d4ed8', interessent:'#6d28d9', inaktiv:'#64748b',
-                   won:'#15803d', lost:'#b91c1c', pausiert:'#7e22ce', intern:'#475569', netzwerk:'#0f766e', partner:'#0369a1', dienstleister:'#475569' };
-const AK_PSTATUS = { lead:'Angebahnt', aktiv:'Aktiv', pausiert:'Pausiert', won:'Gewonnen', lost:'Verloren', inaktiv:'Inaktiv' };
+                   won:'#15803d', lost:'#b91c1c', pausiert:'#7e22ce', intern:'#475569', netzwerk:'#0f766e', partner:'#0369a1', dienstleister:'#475569',
+                   anbahnung:'#b45309', angebot:'#1d4ed8', laeuft:'#15803d', abgeschlossen:'#64748b', verloren:'#b91c1c',
+                   'anbahnung':'#b45309', 'angebot raus':'#1d4ed8', 'läuft':'#15803d' };
+const AK_PSTATUS = { anbahnung:'Anbahnung', angebot:'Angebot raus', laeuft:'Läuft', abgeschlossen:'Abgeschlossen', verloren:'Verloren' };
 const AK_ICON = {
   tel: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>',
   mail: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
@@ -1087,7 +1414,7 @@ function akteZeichnen(){
   let h = `<div class="ak-kopf">
     <div class="ak-titelzeile">
       <div class="ak-titel"><h2>${_akE(d.firma)}</h2>
-        <div class="ak-unter">${_akBadge(d.status)}${d.acos_fuehren ? ' <span class="ak-acos">In ACOS</span>' : ''}
+        <div class="ak-unter">${_akBeziehung(d)}${d.acos_fuehren ? ' <span class="ak-acos">In ACOS</span>' : ''}
           <span>${_akE([d.branch, (d.address||'').split(',').pop().trim()].filter(Boolean).join(' · '))}</span></div></div>
       <div class="ak-menuwrap">
         <button type="button" class="ak-iconbtn" onclick="akteMenu()" aria-label="Weitere Aktionen" aria-expanded="${_AK.menu}">${AK_ICON.dots}</button>
@@ -1130,14 +1457,17 @@ function _akUebersicht(d, offen){
   let h = `<section class="ak-karte"><div class="ak-kz"><h3>Stammdaten</h3>${_AK.edit ? '' : '<button type="button" class="ak-link" onclick="_AK.edit=true;akteZeichnen()">Bearbeiten</button>'}</div>`;
   if(!_AK.edit){
     const z = (l, v) => `<dt>${l}</dt><dd>${v || '<span class="ak-leer">–</span>'}</dd>`;
-    h += `<dl class="ak-dl">${z('Status', _akBadge(d.status))}${z('Branche', _akE(d.branch))}${z('Adresse', _akE(d.address))}
+    h += `<dl class="ak-dl">${z('Beziehung', _akBeziehung(d))}${z('Branche', _akE(d.branch))}${z('Adresse', _akE(d.address))}
       ${z('Zentrale', d.phone_central ? `<a href="${_akTel(d.phone_central)}">${_akE(d.phone_central)}</a>` : '')}
       ${z('Quelle', _akE(d.source))}${z('Letzter Kontakt', _akD(d.last_contact))}${z('Im CRM seit', _akD(d.created))}</dl>`;
   } else {
     const st = String(d.status||'').split(',').map(x=>x.trim().toLowerCase());
     h += `<div class="ak-form">
-      <div class="ak-feld ak-voll"><span>Status</span><div class="ak-pills">${AK_STATUS.map(s=>
+      <div class="ak-feld ak-voll"><span>Beziehung</span><div class="ak-pills">${Object.entries(d.arten||{mandant:'Mandant'}).map(([k,l])=>
+        `<label class="ak-pill"><input type="radio" name="ak-art" value="${k}" ${(d.art||'mandant')===k?'checked':''} onchange="akteArtWechsel()">${_akE(l)}</label>`).join('')}</div></div>
+      <div class="ak-feld ak-voll" id="ak-status-feld" ${(d.art||'mandant')!=='mandant'?'hidden':''}><span>Status</span><div class="ak-pills">${AK_STATUS.map(s=>
         `<label class="ak-pill"><input type="checkbox" name="ak-st" value="${s}" ${st.includes(s)?'checked':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</label>`).join('')}</div></div>
+      <label class="ak-feld ak-voll" id="ak-funktion-feld" ${(d.art||'mandant')==='mandant'?'hidden':''}><span class="ak-flabel">${d.art==='lieferant'?'Leistung':'Funktion'}</span><input id="ak-funktion" value="${_akE(d.funktion)}" placeholder="z. B. Hausbank, Steuerberatung, Hosting"></label>
       <label class="ak-feld">Branche<input id="ak-branch" value="${_akE(d.branch)}"></label>
       <label class="ak-feld">Quelle<input id="ak-source" value="${_akE(d.source)}" placeholder="Eigenakquise, Empfehlung …"></label>
       <label class="ak-feld ak-voll">Adresse<input id="ak-address" value="${_akE(d.address)}" placeholder="Straße 1, 12345 Ort"></label>
@@ -1151,6 +1481,8 @@ function _akUebersicht(d, offen){
   h += `<section><div class="ak-kz"><h3>Ansprechpartner</h3><button type="button" class="ak-link" onclick="akteTab('personen')">${d.personen.length ? 'Alle (' + d.personen.length + ')' : '＋ Person'}</button></div>`;
   h += d.personen.length ? d.personen.slice(0,3).map(p=>_akPersonZeile(p)).join('') : '<p class="ak-leer">Noch keine Person.</p>';
   h += '</section>';
+  h += _akBeteiligte(d);
+  h += _akVertraege(d);
   h += `<section><div class="ak-kz"><h3>Offene Aufgaben</h3><button type="button" class="ak-link" onclick="akteTab('projekte')">${offen.length ? 'Alle (' + offen.length + ')' : '＋ Aufgabe'}</button></div>`;
   h += offen.length ? offen.slice(0,4).map(a=>_akAufgabe(a, true)).join('') : '<p class="ak-leer">Keine offenen Aufgaben.</p>';
   h += '</section>';
@@ -1202,14 +1534,16 @@ function _akProjekte(d){
     <button type="button" class="ak-btn" onclick="akteNeuesProjekt()">${AK_ICON.plus}Projekt</button></div>`;
   if(_AK.form === 'aufgabe') h += `<section class="ak-karte"><h3>Neue Aufgabe</h3><div class="ak-form">
       <label class="ak-feld ak-voll">Was ist zu tun?<input id="aka-titel" data-autofocus onkeydown="if(event.key==='Enter')akteAufgabeSpeichern()"></label>
-      <label class="ak-feld">Projekt<select id="aka-projekt">${d.projekte.length ? '' : '<option value="">Laufende Betreuung (wird angelegt)</option>'}${d.projekte.map(p=>
+      <label class="ak-feld">Projekt<select id="aka-projekt"><option value="">Ohne Projekt</option>${d.projekte.map(p=>
         `<option value="${_akE(p.id)}">${_akE(p.title)}</option>`).join('')}</select></label>
       <label class="ak-feld">Fällig am<input id="aka-due" type="date"></label>
       <div class="ak-fuss ak-voll"><span class="ak-meldung" id="ak-msg"></span>
         <button type="button" class="ak-btn" onclick="akteForm(null)">Abbrechen</button>
         <button type="button" class="ak-prim" onclick="akteAufgabeSpeichern()">Anlegen</button></div></div></section>`;
-  if(!d.projekte.length) return h + '<p class="ak-leer">Noch kein Projekt. Eine neue Aufgabe legt das Projekt „laufende Betreuung“ an.</p>';
   const erledigt = d.aufgaben.filter(a=>a.status === 'Erledigt').length;
+  const ohne = d.aufgaben.filter(a=>!a.projektId && (_AK.erledigtZeigen || a.status !== 'Erledigt'));
+  if(ohne.length || !d.projekte.length) h += `<section class="ak-karte"><div class="ak-kz"><h3>Ohne Projekt</h3></div>
+      ${ohne.length ? ohne.map(a=>_akAufgabe(a, false)).join('') : '<p class="ak-leer">Keine offenen Aufgaben.</p>'}</section>`;
   h += d.projekte.map(p=>{
     const auf = d.aufgaben.filter(a=>String(a.projektId) === String(p.id) && (_AK.erledigtZeigen || a.status !== 'Erledigt'));
     return `<section class="ak-karte"><div class="ak-kz"><button type="button" class="ak-ptitel" onclick="openProjektAkte('${_akE(p.id)}')">${_akE(p.title)}</button>
@@ -1251,7 +1585,7 @@ function _akAcos(d){
 const _KW = { fid: null, q: '', timer: null };
 function _akKundenwissen(d){
   return `<section class="ak-karte">
-    <input class="search-input" id="kw-q" type="search" placeholder="In Besprechungen, ACOS-Unterlagen und Journal suchen, z. B. Stundung"
+    <input class="search-input" id="kw-q" type="search" placeholder="In Besprechungen, ACOS-Unterlagen, Dokumenttiteln und Journal suchen, z. B. Stundung"
       value="${_akE(_KW.fid === d.id ? _KW.q : '')}" oninput="kwSuche(this.value)" aria-label="Kundenwissen durchsuchen">
     <div id="kw-inhalt"><p class="ak-leer">Wird geladen…</p></div></section>`;
 }
@@ -1274,7 +1608,7 @@ function _kwZeichnen(d){
   const el = document.getElementById('kw-inhalt'); if(!el) return;
   const stand = d.stand ? `Stand des Abgleichs: ${new Date(d.stand).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}` : 'Noch kein Abgleich für diese Firma.';
   if(d.q){
-    el.innerHTML = (d.treffer.length ? d.treffer.map(t=>`<button type="button" class="kw-treffer" onclick="${t.art==='journal' ? `openJournalEntry(${t.id})` : `kwOeffnen(${t.id})`}">
+    el.innerHTML = (d.treffer.length ? d.treffer.map(t=> t.art==='acos_dok' ? _kwAcosTreffer(t) : `<button type="button" class="kw-treffer" onclick="${t.art==='journal' ? `openJournalEntry(${t.id})` : `kwOeffnen(${t.id})`}">
         <span class="kw-kopf"><span class="kw-quelle kw-${t.quelle}">${_akE(t.quelle_label)}</span><b>${_akE(t.titel)}</b><span class="kw-datum">${_kwDatum(t.datum)}</span></span>
         ${t.auszug ? `<span class="kw-auszug">${_kwAuszug(t.auszug)}</span>` : ''}</button>`).join('')
       : `<p class="ak-leer">Nichts gefunden für „${_akE(d.q)}“.</p>`) + `<p class="kw-stand">${stand}</p>`;
@@ -1286,7 +1620,20 @@ function _kwZeichnen(d){
     + (bes.length ? bes.map(zeile).join('') : '<p class="ak-leer">Noch keine Dateien in „Besprechungen“. Dateiname am besten mit Datum vorne, z. B. 2026-10-28 Bankgespräch.txt</p>')
     + `<div class="ak-kz" style="margin-top:.8rem"><h3>Aus ACOS</h3></div>`
     + (ac.length ? ac.map(zeile).join('') : '<p class="ak-leer">Keine ACOS-Unterlagen im Kundenordner.</p>')
+    + `<div class="ak-kz" style="margin-top:.8rem"><h3>Dokumente in ACOS</h3></div>`
+    + ((d.acos_dokumente||[]).length ? d.acos_dokumente.map(x=>`${_kwAcosStart(x, 'kw-zeile')}<span class="kw-datum">${_kwDatum(x.datum)}</span><span>${_akE(x.titel)}</span>${x.link ? '<span class="kw-acoslink">in ACOS ↗</span></a>' : '</div>'}`).join('')
+        : '<p class="ak-leer">Keine Dokumente in ACOS – oder die Firma wird nicht in ACOS geführt.</p>')
     + `<p class="kw-stand">${stand} · wird stündlich mit der Recherche abgeglichen</p>`;
+}
+// ACOS-Dokument: nur Verweis, kein Download - Klick oeffnet ACOS in neuem Tab
+function _kwAcosStart(x, cls){
+  cls = cls || 'kw-treffer';
+  return x.link ? `<a class="${cls} kw-ext" href="${_akE(x.link)}" target="_blank" rel="noopener" title="In ACOS öffnen">`
+                : `<div class="${cls} kw-ohnelink" title="Kein ACOS-Link bekannt">`;
+}
+function _kwAcosTreffer(t){
+  return `${_kwAcosStart(t)}<span class="kw-kopf"><span class="kw-quelle kw-acos_dok">${_akE(t.quelle_label)}</span><b>${_akE(t.titel)}</b><span class="kw-datum">${_kwDatum(t.datum)}</span></span>
+    <span class="kw-auszug">Treffer im Titel · ${t.link ? 'öffnet in ACOS ↗' : 'kein ACOS-Link bekannt'}</span>${t.link ? '</a>' : '</div>'}`;
 }
 function kwOeffnen(id){
   api('GET','/api/kundenwissen/' + id).then(d=>{
@@ -1387,14 +1734,21 @@ function _akProjektAkte(d, t){
     if(!_AK.edit){
       const z = (l, v) => `<dt>${l}</dt><dd>${v || '<span class="ak-leer">–</span>'}</dd>`;
       h += `<section class="ak-karte"><div class="ak-kz"><h3>Projekt</h3><button type="button" class="ak-link" onclick="_AK.edit=true;akteZeichnen()">Bearbeiten</button></div>
-        <dl class="ak-dl">${z('Status', _akBadge(d.status_optionen[d.status] || d.status))}${z('Unternehmen', d.firma_id ? `<button type="button" class="ak-link" onclick="openAkte('${_akE(d.firma_id)}')">${_akE(d.firma)}</button>` : '')}
+        <dl class="ak-dl">${z('Phase', _akBadge(d.status_optionen[d.status] || d.status))}${z('Unternehmen', d.firma_id ? `<button type="button" class="ak-link" onclick="openAkte('${_akE(d.firma_id)}')">${_akE(d.firma)}</button>` : '')}
         ${z('Ansprechpartner', _akE(d.ansprechpartner))}${z('Wert', _akE(d.value))}${z('Wahrscheinlichkeit', d.probability ? _akE(d.probability) + ' %' : '')}
+        ${z('Honorar', _akE(d.honorar_kurz))}${z('Lexware', _akE(d.lexware_ref))}
+        ${d.status === 'verloren' ? z('Verlustgrund', d.verlustgrund ? _akE(d.verlustgrund_label) + (d.verlust_notiz ? ' – ' + _akE(d.verlust_notiz) : '') : '<span class="ak-warn">fehlt – bitte unter Bearbeiten nachtragen</span>') : ''}
         ${z('Frist', _akD(d.deadline))}${z('Angelegt', _akD(d.created))}</dl>
         ${d.summary ? `<p class="ak-text">${_akE(d.summary)}</p>` : ''}</section>`;
     } else {
       h += `<section class="ak-karte"><h3>Projekt bearbeiten</h3><div class="ak-form">
         <label class="ak-feld ak-voll">Name<input id="akr-title" value="${_akE(d.title)}"></label>
-        <label class="ak-feld">Status<select id="akr-status">${Object.entries(d.status_optionen).map(([k,l])=>`<option value="${k}" ${d.status===k?'selected':''}>${_akE(l)}</option>`).join('')}</select></label>
+        <label class="ak-feld">Phase<select id="akr-status" onchange="akteVerlustFelder()">${Object.entries(d.status_optionen).map(([k,l])=>`<option value="${k}" ${d.status===k?'selected':''}>${_akE(l)}</option>`).join('')}</select></label>
+        <label class="ak-feld akr-v" ${d.status==='verloren'?'':'hidden'}>Verlustgrund<select id="akr-vgrund"><option value="">– bitte wählen –</option>${Object.entries(d.verlustgruende).map(([k,l])=>`<option value="${k}" ${d.verlustgrund===k?'selected':''}>${_akE(l)}</option>`).join('')}</select></label>
+        <label class="ak-feld ak-voll akr-v" ${d.status==='verloren'?'':'hidden'}>Was war los? (optional)<input id="akr-vnotiz" value="${_akE(d.verlust_notiz)}"></label>
+        <label class="ak-feld">Honorarart<select id="akr-hart">${Object.entries(d.honorararten).map(([k,l])=>`<option value="${k}" ${d.honorarart===k?'selected':''}>${_akE(l)}</option>`).join('')}</select></label>
+        <label class="ak-feld">Lexware-Nr. (Angebot/Auftrag)<input id="akr-lex" placeholder="z. B. AN-2026-041" value="${_akE(d.lexware_ref)}"></label>
+        <label class="ak-feld ak-voll">Honorar im Detail<input id="akr-honorar" placeholder="z. B. 12.000 €, 50 % bei Auftrag, Rest bei Abschluss" value="${_akE(d.honorar)}"></label>
         <label class="ak-feld">Ansprechpartner<select id="akr-person"><option value="">– niemand –</option>${d.personen.map(p=>`<option ${p.name===d.ansprechpartner?'selected':''}>${_akE(p.name)}</option>`).join('')}</select></label>
         <label class="ak-feld">Wert (€)<input id="akr-value" value="${_akE(d.value)}"></label>
         <label class="ak-feld">Wahrscheinlichkeit (%)<input id="akr-prob" inputmode="numeric" value="${_akE(d.probability)}"></label>
@@ -1431,11 +1785,18 @@ function aktePersonAendern(){
   api('PUT', '/api/contacts/' + encodeURIComponent(_AK.d.firma_id) + '/persons/' + encodeURIComponent(_AK.id), body)
     .then(()=>{ _AK.edit = false; _akListeVeraltet(); return akteLaden(); }).catch(t=>_akMsg(_akFehler(t)));
 }
+function akteVerlustFelder(){
+  const verl = document.getElementById('akr-status').value === 'verloren';
+  document.querySelectorAll('.akr-v').forEach(el=>{ el.hidden = !verl; });
+}
 function akteProjektAendern(){
   const v = id => document.getElementById(id).value.trim();
   if(!v('akr-title')){ _akMsg('Der Name darf nicht leer sein.'); return; }
+  if(v('akr-status') === 'verloren' && !v('akr-vgrund')){ _akMsg('Bitte einen Verlustgrund wählen.'); return; }
   const body = { title: v('akr-title'), status: v('akr-status'), ansprechpartner: v('akr-person'), value: v('akr-value'),
-                 probability: v('akr-prob'), deadline: v('akr-dl'), summary: v('akr-sum') };
+                 probability: v('akr-prob'), deadline: v('akr-dl'), summary: v('akr-sum'),
+                 honorarart: v('akr-hart'), honorar: v('akr-honorar'), lexware_ref: v('akr-lex'),
+                 verlustgrund: v('akr-status') === 'verloren' ? v('akr-vgrund') : '', verlust_notiz: v('akr-status') === 'verloren' ? v('akr-vnotiz') : '' };
   api('PUT', '/api/opportunities/' + encodeURIComponent(_AK.id), body)
     .then(()=>{ _AK.edit = false; _akListeVeraltet(); return akteLaden(); }).catch(t=>_akMsg(_akFehler(t)));
 }
@@ -1443,9 +1804,13 @@ function akteProjektAendern(){
 // ── Speichern aus der Akte ──
 function _akMsg(t){ const el = document.getElementById('ak-msg'); if(el) el.textContent = t; }
 function akteStammSpeichern(){
-  const st = Array.from(document.querySelectorAll('input[name=ak-st]:checked')).map(i=>i.value).join(',');
+  const artEl = document.querySelector('input[name=ak-art]:checked');
+  const art = artEl ? artEl.value : 'mandant';
+  let st = Array.from(document.querySelectorAll('input[name=ak-st]:checked')).map(i=>i.value).join(',');
+  if(art !== 'mandant') st = AK_ART_STATUS[art] || art;
   if(!st){ _akMsg('Bitte mindestens einen Status wählen.'); return; }
-  const body = { status: st, branch: document.getElementById('ak-branch').value.trim(), source: document.getElementById('ak-source').value.trim(),
+  const fEl = document.getElementById('ak-funktion');
+  const body = { art: art, funktion: art === 'mandant' ? '' : (fEl ? fEl.value.trim() : ''), status: st, branch: document.getElementById('ak-branch').value.trim(), source: document.getElementById('ak-source').value.trim(),
                  address: document.getElementById('ak-address').value.trim(), phone_central: document.getElementById('ak-phone').value.trim(),
                  last_contact: document.getElementById('ak-last').value };
   api('PUT', '/api/contacts/' + encodeURIComponent(_AK.id), body).then(()=>{ _AK.edit = false; _akListeVeraltet(); return akteLaden(); })
@@ -1705,6 +2070,182 @@ function tagAbschliessen(){
     .then(()=>loadHeuteTag())
     .catch(()=>{ if(m) m.textContent = 'Abschluss fehlgeschlagen.'; });
 }
+
+// ── HEUTE: Startseite (Umbau Schritt 11) ──────────────────────────────
+let _HS = null;
+function loadHeuteStart(){
+  api('GET','/api/heute/start').then(d=>{ _HS = d; renderHeuteStart(d); })
+    .catch(()=>{ const el = document.getElementById('hs-aufgaben'); if(el) el.innerHTML = '<p class="hz-leer">Konnte nicht geladen werden.</p>'; });
+}
+document.addEventListener('DOMContentLoaded', ()=>{ if(document.getElementById('hs-aufgaben')) loadHeuteStart(); });
+function _hsZahl(n, eins, viele){ return n + ' ' + (n === 1 ? eins : viele); }
+function renderHeuteStart(d){
+  const a = d.aufgaben, offenHeute = a.ueber.length + a.heute.length;
+  document.getElementById('hs-datum').textContent = d.datum_lang;
+  document.getElementById('hs-gruss').textContent = d.gruss + ', Ronald';
+  const lage = [];
+  if(d.kalender.eingerichtet) lage.push(d.termine.length ? _hsZahl(d.termine.length, 'Termin', 'Termine') : 'keine Termine');
+  lage.push(offenHeute ? _hsZahl(offenHeute, 'Aufgabe', 'Aufgaben') + ' für heute' + (a.ueber.length ? ', davon ' + a.ueber.length + ' überfällig' : '') : 'keine Aufgabe mehr für heute');
+  lage.push(d.mails_offen ? _hsZahl(d.mails_offen, 'Mail wartet', 'Mails warten') + ' auf Zuordnung' : 'Mail-Review leer');
+  document.getElementById('hs-lage').textContent = lage.join(' · ');
+  // Aufgaben
+  const gruppe = (titel, liste, rot) => liste.length ? `<div class="hs-gruppe">${titel}</div>` + liste.map(t=>`<div class="hs-task">
+      <input type="checkbox" aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)">
+      <div class="hs-tt"><button type="button" class="hs-titel" onclick="editTask('${_hE(t.taskId)}')">${_hE(t.titel)}</button>
+        <div class="hs-wo">${t.firma ? `<button type="button" class="hz-link" onclick="${t.firmaId ? `openAkte('${t.firmaId}')` : `openContactByName('${_hE(t.firma)}')`}">${_hE(t.firma)}</button>` : '<span>eigene Aufgabe</span>'}${t.projekt ? ' · ' + _hE(t.projekt) : ''}</div></div>
+      <span class="hs-due${rot ? ' rot' : ''}">${_hE(t.faellig)}</span></div>`).join('') : '';
+  const auf = gruppe('Überfällig', a.ueber, true) + gruppe('Heute', a.heute) + gruppe('Diese Woche', a.woche);
+  document.getElementById('hs-aufgaben').innerHTML = auf || '<p class="hz-leer">Nichts fällig in den nächsten sieben Tagen.</p>';
+  document.getElementById('hs-erl').textContent = d.erledigt_heute ? d.erledigt_heute + ' heute erledigt' : '';
+  // Mails
+  document.getElementById('hs-mailzahl').textContent = d.mails_offen ? d.mails_offen + ' offen' : 'alles zugeordnet';
+  document.getElementById('hs-mails').innerHTML = d.mails.length ? d.mails.map(m=>`<div class="hs-mail" id="hs-mail-${m.id}">
+      <div class="hs-mk"><span class="hs-mvon">${_hE(m.von)}</span><span class="hs-mbetr"> · ${_hE(m.betreff)}</span><span class="hs-mzeit">${_hE(_hD(m.datum))}</span></div>
+      <div class="hs-mv"><span class="hs-vorschlag">${_hE(m.vorschlag)}</span>
+        <button type="button" class="btn btn-ghost hz-klein" onclick="heuteMailSpaeter('${m.id}')">Später</button>
+        ${m.einfach ? `<button type="button" class="btn btn-primary hz-klein" onclick="heuteMailOk('${m.id}')">Übernehmen</button>`
+                    : `<button type="button" class="btn btn-primary hz-klein" onclick="heuteMailPruefen('${m.id}')">Prüfen</button>`}</div></div>`).join('')
+    : '<p class="hz-leer">Keine offenen Mails.</p>';
+  renderHeuteTermine(d);
+  // Im Blick
+  document.getElementById('hs-blick').innerHTML = d.im_blick.length ? d.im_blick.map((b,i)=>`<div class="hs-blick">
+      <span class="hs-punkt ${b.art === 'fehler' ? 'rot' : b.art === 'schritt' ? 'grau' : ''}"></span>
+      <div class="hs-bt">${b.firma ? `<button type="button" class="hz-link" onclick="${b.firmaId ? `openAkte('${b.firmaId}')` : `openContactByName('${_hE(b.firma)}')`}">${_hE(b.firma)}</button>` : ''}<div>${_hE(b.text)}</div></div>
+      ${b.aktion === 'aufgabe' ? `<span class="hs-ba"><button type="button" class="hz-link" onclick="heuteBlickAufgabe(${i})">Als Aufgabe</button> · <button type="button" class="hz-link" onclick="heuteBlickWeg(${i})">Erledigt</button></span>`
+        : b.aktion === 'projekt' ? `<button type="button" class="hz-link hs-ba" onclick="openProjektAkte('${b.projektId}')">Projekt öffnen</button>`
+        : b.aktion === 'akte' && b.firmaId ? `<button type="button" class="hz-link hs-ba" onclick="openAkte('${b.firmaId}')">Akte</button>` : ''}</div>`).join('')
+    : '<p class="hz-leer">Nichts, was gerade Aufmerksamkeit braucht.</p>';
+}
+let _hsNotizOffen = null;
+function _hsFirmenOpts(){ return '<option value="">– Unternehmen wählen –</option>' + (typeof CRM_CONTACTS !== 'undefined' ? CRM_CONTACTS : []).map(c=>`<option>${_hE(c.firma)}</option>`).join(''); }
+function renderHeuteTermine(d){
+  const el = document.getElementById('hs-termine');
+  const k = d.kalender;
+  const stand = document.getElementById('hs-kalstand');
+  if(!k.eingerichtet){
+    stand.textContent = '';
+    el.innerHTML = '<p class="hz-leer">Noch kein Kalender verbunden. Sobald die geheime iCal-Adresse des Google-Kalenders auf dem Server liegt, erscheinen hier deine Termine.</p>';
+    return;
+  }
+  stand.textContent = k.zeitpunkt ? 'Stand ' + new Date(k.zeitpunkt).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}) + (k.ok ? '' : ' · Fehler') : '';
+  let jetztGesetzt = false;
+  const zeile = t => {
+    let h = '';
+    if(!jetztGesetzt && !t.ganztag && !t.vorbei){ jetztGesetzt = true; h += `<div class="hs-jetzt"><span>jetzt ${_hE(d.jetzt)}</span><i></i></div>`; }
+    const wo = [t.firma ? `<button type="button" class="hz-link" onclick="openAkte('${t.firmaId}')">${_hE(t.firma)}</button>` : '', t.ort ? _hE(t.ort) : ''].filter(Boolean).join(' · ');
+    h += `<div class="hs-termin${t.vorbei ? ' vorbei' : ''}${t.laeuft ? ' laeuft' : ''}${t.ganztag ? ' ganztag' : ''}"><div class="hs-zeit">${_hE(t.zeit)}${t.bis ? `<small>${_hE(t.bis)}</small>` : ''}</div><div class="hs-tinhalt">
+      <div class="hs-ttitel">${_hE(t.titel)}</div>${wo ? `<div class="hs-wo">${wo}</div>` : ''}`;
+    if(!t.firma && !t.ganztag) h += `<div class="hs-zuo"><button type="button" class="hz-link" onclick="this.outerHTML='<select onchange=&quot;heuteTerminFirma(${t.id}, this.value)&quot; aria-label=&quot;Unternehmen zuordnen&quot;>'+_hsFirmenOpts()+'</select>'">Unternehmen zuordnen</button></div>`;
+    if(!t.vorbei && t.vorbereitung) h += `<div class="hs-vorb">${_hE(t.vorbereitung)}</div>`;
+    if(t.vorbei && t.firma){
+      if(t.notiz === 'gespeichert') h += `<div class="hs-ok">✓ Im Journal von ${_hE(t.firma)} gespeichert</div>`;
+      else if(t.notiz === 'offen' && _hsNotizOffen === t.id) h += `<div class="hs-notiz"><textarea id="hs-notiz-text" rows="3" placeholder="Was wurde besprochen, was ist der nächste Schritt?"></textarea>
+          <div class="hs-nk"><span class="hz-meta" id="hs-notiz-msg"></span><button type="button" class="btn btn-ghost hz-klein" onclick="_hsNotizOffen=null;renderHeuteTermine(_HS)">Abbrechen</button>
+          <button type="button" class="btn btn-primary hz-klein" onclick="heuteTerminNotiz(${t.id})">Ins Journal</button></div></div>`;
+      else if(t.notiz === 'offen') h += `<div class="hs-nk"><button type="button" class="btn btn-ghost hz-klein" onclick="_hsNotizOffen=${t.id};renderHeuteTermine(_HS);setTimeout(()=>{const x=document.getElementById('hs-notiz-text');if(x)x.focus();},30)">Notiz zum Gespräch</button>
+          <button type="button" class="hz-link" onclick="heuteTerminKeineNotiz(${t.id})">keine nötig</button></div>`;
+    }
+    return h + '</div></div>';
+  };
+  let h = d.termine.length ? d.termine.map(zeile).join('') : '<p class="hz-leer">Heute keine Termine.</p>';
+  if(d.naechste.length) h += '<div class="hs-gruppe">Demnächst</div>' + d.naechste.map(t=>`<div class="hs-naechst"><span>${_hE(t.tag)} ${_hE(t.zeit)}</span> ${_hE(t.titel)}${t.firma ? ' <small>· ' + _hE(t.firma) + '</small>' : ''}</div>`).join('');
+  if(!k.ok && k.meldung) h += `<p class="hz-meta" style="color:var(--red)">Letzter Abruf fehlgeschlagen: ${_hE(k.meldung)}</p>`;
+  el.innerHTML = h;
+}
+function heuteAufgabeErledigt(taskId, cb){
+  cb.disabled = true;
+  api('PUT', '/api/tasks/' + encodeURIComponent(taskId), { status: 'Erledigt' })
+    .then(()=>{ cb.closest('.hs-task').classList.add('erl'); setTimeout(()=>{ loadHeuteStart(); if(typeof loadHeuteTag==='function') loadHeuteTag(); }, 600); })
+    .catch(()=>{ cb.checked = false; cb.disabled = false; alert('Konnte nicht gespeichert werden.'); });
+}
+function heuteMailOk(id){
+  const m = (_HS.mails || []).find(x=>x.id === id) || {};
+  const body = { anhaenge: [], journal: true };
+  if(m.aufgabe) body.aufgabe = m.aufgabe; else body.aufgabe = null;
+  api('POST', '/api/mail-review/'+id+'/confirm', body).then(()=>loadHeuteStart())
+    .catch(t=>{ let x = 'Konnte nicht übernommen werden.'; try { x = JSON.parse(t).error || x; } catch(e){} alert(x); });
+}
+function heuteMailSpaeter(id){ api('POST', '/api/mail-review/'+id+'/spaeter', {}).then(()=>loadHeuteStart()); }
+function heuteMailPruefen(id){
+  if(typeof _mrSel !== 'undefined'){ _mrSel = id; _mrFilter = 'offen'; }
+  const tab = document.querySelector('.tab[data-panel="mailreview"]');
+  showPanel('mailreview', tab);
+}
+function heuteTerminNotiz(id){
+  const text = (document.getElementById('hs-notiz-text').value || '').trim();
+  const msg = document.getElementById('hs-notiz-msg');
+  if(!text){ msg.textContent = 'Bitte kurz notieren, was besprochen wurde.'; return; }
+  api('POST', '/api/termine/'+id+'/notiz', { text }).then(()=>{ _hsNotizOffen = null; loadHeuteStart(); if(typeof loadHeuteTag==='function') loadHeuteTag(); })
+    .catch(t=>{ let x = 'Konnte nicht gespeichert werden.'; try { x = JSON.parse(t).error || x; } catch(e){} msg.textContent = x; });
+}
+function heuteTerminKeineNotiz(id){ api('POST', '/api/termine/'+id+'/notiz', { keine: true }).then(()=>loadHeuteStart()); }
+function heuteTerminFirma(id, firma){ if(!firma) return; api('POST', '/api/termine/'+id+'/firma', { firma }).then(()=>loadHeuteStart()).catch(()=>alert('Konnte nicht zugeordnet werden.')); }
+function kalenderAbgleich(btn){
+  if(btn){ btn.disabled = true; }
+  api('POST', '/api/kalender/abgleich', {}).then(r=>{ if(r && !r.ok && r.meldung) alert(r.meldung); loadHeuteStart(); })
+    .finally(()=>{ if(btn) btn.disabled = false; });
+}
+function heuteBlickAufgabe(i){
+  const b = _HS.im_blick[i]; if(!b) return;
+  api('POST', '/api/heute/convert', { key: b.key, firma: b.firma, text: b.schritt }).then(()=>loadHeuteStart());
+}
+function heuteBlickWeg(i){
+  const b = _HS.im_blick[i]; if(!b) return;
+  api('POST', '/api/heute/dismiss', { key: b.key }).then(()=>loadHeuteStart());
+}
+// ── RECHERCHE ueber alle Bereiche (Umbau Schritt 13) ─────────────────
+const _R = { bereich: 'alle', timer: null, d: null };
+const _R_NAMEN = { unternehmen: ['Unternehmen','Unternehmen'], kontakt: ['Kontakt','Kontakte'], projekt: ['Projekt','Projekte'],
+  aufgabe: ['Aufgabe','Aufgaben'], journal: ['Journal','Journal'], mail: ['Mail','Mails'],
+  fachwissen: ['Fachwissen','Fachwissen'], kundendokument: ['Kundendokument','Kundendokumente'] };
+function _rE(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _rMark(s){ return _rE(s).replace(/⟦/g,'<mark>').replace(/⟧/g,'</mark>'); }
+function rechercheFilter(delay){ clearTimeout(_R.timer); _R.timer = setTimeout(rechercheSuche, delay || 0); }
+function rechercheBereich(b){ _R.bereich = b; rechercheSuche(); }
+function rechercheFirmen(){
+  const sel = document.getElementById('r-firma');
+  if(sel && sel.options.length <= 1 && typeof CRM_CONTACTS !== 'undefined')
+    sel.innerHTML = '<option value="">Alle</option>' + CRM_CONTACTS.slice().sort((a,b)=>(a.firma||'').localeCompare(b.firma||'', 'de'))
+      .map(c=>`<option value="${_rE(c.id)}">${_rE(c.firma)}</option>`).join('');
+}
+function rechercheSuche(){
+  rechercheFirmen();
+  const q = document.getElementById('r-q').value.trim();
+  const params = new URLSearchParams({ q, bereich: _R.bereich, zeitraum: document.getElementById('r-zeit').value,
+                                       firma_id: document.getElementById('r-firma').value });
+  api('GET', '/api/recherche?' + params.toString()).then(d=>{ _R.d = d; renderRecherche(d); })
+    .catch(()=>{ document.getElementById('r-liste').innerHTML = '<div class="log-empty">Suche fehlgeschlagen.</div>'; });
+}
+function renderRecherche(d){
+  const chips = document.getElementById('r-chips'), liste = document.getElementById('r-liste'), info = document.getElementById('r-info');
+  if(d.leer){
+    chips.innerHTML = ''; info.textContent = '';
+    liste.innerHTML = '<div class="r-leer">Suchbegriff eingeben oder ein Unternehmen wählen.</div>'; return;
+  }
+  const reihe = Object.keys(_R_NAMEN).filter(b => d.zahlen[b] || b === _R.bereich);
+  chips.innerHTML = `<button type="button" class="mr-chip ${_R.bereich==='alle'?'on':''}" onclick="rechercheBereich('alle')">Alle <span>${d.gesamt}</span></button>`
+    + reihe.map(b=>`<button type="button" class="mr-chip ${_R.bereich===b?'on':''}" onclick="rechercheBereich('${b}')">${_R_NAMEN[b][1]} <span>${d.zahlen[b]}</span></button>`).join('');
+  const sicht = _R.bereich === 'alle' ? d.gesamt : (d.zahlen[_R.bereich] || 0);
+  info.textContent = sicht + ' Treffer' + (d.q ? ' für „' + d.q + '“' : '') + (_R.bereich === 'alle' && d.items.length < d.gesamt ? ' · je Bereich die ersten sechs, Bereich anklicken für alle' : '');
+  liste.innerHTML = d.items.length ? d.items.map((t,i)=>`<button type="button" class="r-treffer" onclick="rechercheOeffnen(${i})">
+      <span class="r-b r-b-${t.bereich}">${_rE(_R_NAMEN[t.bereich][0])}</span>
+      <span class="r-inhalt"><span class="r-titel">${_rMark(t.titel)}</span>${t.text ? `<span class="r-text">${_rMark(t.text)}</span>` : ''}${t.ort ? `<span class="r-ort">${_rE(t.ort)}</span>` : ''}</span>
+      <span class="r-datum">${_rE(t.datum)}</span></button>`).join('')
+    : '<div class="r-leer">Nichts gefunden. Weniger oder andere Begriffe probieren.</div>';
+}
+function rechercheOeffnen(i){
+  const t = (_R.d && _R.d.items[i]) || null; if(!t) return;
+  const a = t.aktion;
+  if(a.typ === 'firma') openAkte(a.id);
+  else if(a.typ === 'person') openPersonAkte(a.id);
+  else if(a.typ === 'projekt') openProjektAkte(a.id);
+  else if(a.typ === 'aufgabe') editTask(a.id);
+  else if(a.typ === 'journal') openJournalEntry(a.id);
+  else if(a.typ === 'mailreview'){ if(typeof heuteMailPruefen === 'function') heuteMailPruefen(a.id); }
+  else if(a.typ === 'wissen') window.open('/api/wissen/datei/' + a.id, '_blank', 'noopener');
+  else if(a.typ === 'kundenwissen') kwOeffnen(a.id);
+  else if(a.typ === 'link' && a.id) window.open(a.id, '_blank', 'noopener');
+}
 """
 
 DUBLETTEN_JS = r"""
@@ -1798,7 +2339,7 @@ function _wE(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function _wMark(s){ return _wE(s).replace(/\[\[\[/g,'<mark>').replace(/\]\]\]/g,'</mark>'); }
 function loadWissen(){
   api('GET','/api/wissen/status').then(renderWissenStatus).catch(()=>{});
-  wissenSuche();
+  if(document.getElementById('r-q')) rechercheSuche(); else wissenSuche();
 }
 function renderWissenStatus(st){
   _W.web = st.web || '';
@@ -1858,7 +2399,7 @@ function wissenAbgleich(){
 EINSTELLUNGEN_JS = r"""
 // ── EINSTELLUNGEN (Schritt 5, 2026-10-19) ────────────────────────────
 let _SET = null;
-const _PST_LABELS = { lead:'Angebahnt', aktiv:'Aktiv', pausiert:'Pausiert', won:'Gewonnen', lost:'Verloren', inaktiv:'Inaktiv' };
+const _PST_LABELS = { anbahnung:'Anbahnung', angebot:'Angebot raus', laeuft:'Läuft', abgeschlossen:'Abgeschlossen', verloren:'Verloren' };
 function _sE(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function _sMsg(id, text, ok){ const el = document.getElementById(id); el.textContent = text; el.className = 'set-msg ' + (ok ? 'ok' : 'err'); if(ok) setTimeout(()=>{ if(el.textContent===text) el.textContent=''; }, 4000); }
 function _sErr(t){ try { return JSON.parse(t).error || JSON.parse(t).meldung || 'Fehler'; } catch(e){ return 'Fehler beim Speichern'; } }
@@ -2020,7 +2561,18 @@ function filterArchive(q){
     r.classList.toggle('hidden', q.length>0 && !r.textContent.toLowerCase().includes(q)));
 }
 // ── PROJEKT-STATUSFILTER (Schritt 2, 2026-10-19) ─────────────────────
-const PROJEKT_STATUS_DEFAULT = ['lead','aktiv','pausiert'];
+const PROJEKT_STATUS_DEFAULT = ['anbahnung','angebot','laeuft'];
+function projektAnsicht(v){
+  const phasen = v !== 'liste';
+  const b = document.getElementById('pb-board'), l = document.getElementById('pb-liste'), h = document.getElementById('pb-verloren');
+  if(!b || !l) return;
+  b.style.display = phasen ? '' : 'none'; if(h) h.style.display = phasen ? '' : 'none';
+  l.style.display = phasen ? 'none' : '';
+  document.getElementById('pb-btn-phasen').classList.toggle('on', phasen);
+  document.getElementById('pb-btn-liste').classList.toggle('on', !phasen);
+  try { localStorage.setItem('crm_projektansicht', phasen ? 'phasen' : 'liste'); } catch(e){}
+}
+document.addEventListener('DOMContentLoaded', ()=>{ let v = 'phasen'; try { v = localStorage.getItem('crm_projektansicht') || 'phasen'; } catch(e){} projektAnsicht(v); });
 function _projektStatusSel(){
   // Seit Schritt 5: pro Benutzer auf dem Server gespeichert (gilt auf allen Geraeten)
   if (typeof CRM_USER !== 'undefined' && Array.isArray(CRM_USER.projekt_status)) return CRM_USER.projekt_status.slice();
@@ -2176,6 +2728,7 @@ STATUS_COLORS = {
     "aktiv": "#3b82f6", "lead": "#f59e0b", "kunde": "#22c55e",
     "interessent": "#a78bfa", "inaktiv": "#9ca3af", "won": "#22c55e", "lost": "#ef4444",
     "intern": "#64748b", "pausiert": "#a855f7",
+    "anbahnung": "#d97706", "angebot": "#2563eb", "laeuft": "#16a34a", "abgeschlossen": "#64748b", "verloren": "#dc2626",
 }
 PRIO_COLORS = {"kritisch": "#ef4444", "hoch": "#f97316", "mittel": "#f59e0b", "niedrig": "#22c55e"}
 
@@ -2206,11 +2759,21 @@ def _h(v):
     import html as _html
     return _html.escape(str(v or ""), quote=True)
 
+def _test_banner():
+    """Gut sichtbarer Hinweis, wenn die Instanz NICHT auf der Echtdatenbank laeuft
+    (Umbau-Testinstanz mit CRM_DB_NAME=crm_test)."""
+    if DB_NAME == "crm":
+        return ""
+    return ('<div style="background:#f59e0b;color:#111;font-weight:600;padding:.45rem 1rem;'
+            'text-align:center;letter-spacing:.02em">Testinstanz \u2013 Datenbank ' + _h(DB_NAME) +
+            ' \u2013 \u00c4nderungen hier wirken nicht im echten CRM</div>')
+
+
 def build_dashboard():
     tasks = load_tasks()
     contacts = load_contacts()
     opps = load_opportunities()
-    mail_review_items = load_mail_review_queue()
+    mail_review_items = range(mail_review_offen_anzahl())
     persons = load_persons()
     kampagnen = all_kampagnen()
     heute_candidates = build_heute_candidates(contacts, tasks)
@@ -2233,10 +2796,10 @@ def build_dashboard():
     for t in sorted(active_tasks, key=lambda x: (x.get("deadline") or "9999", x["priority"])):
         tid = t["taskId"]
         contact = t.get('contact','')
-        contact_cell = f'<a class="contact-link" href="#" onclick="openContactByName(\'{contact.replace(chr(39), chr(92)+chr(39))}\')">{contact}</a>' if contact else '<span style="color:#9ca3af">–</span>'
+        contact_cell = f'<a class="contact-link" href="#" onclick="openContactByName(\'{contact.replace(chr(39), chr(92)+chr(39))}\')">{contact}</a>' if contact else '<span style="color:#64748b;font-style:italic">eigene Aufgabe</span>'
         task_rows += f"""<tr class="t-zeile" tabindex="0" onclick="if(!event.target.closest('a'))editTask('{tid}')" onkeydown="if(event.key==='Enter')editTask('{tid}')">
           <td><span class="task-id">{tid}</span></td>
-          <td>{t['title']}</td>
+          <td>{t['title']}{f'<small class="t-herkunft">{HERKUNFT.get(t.get("herkunft"), "")}</small>' if t.get("herkunft") not in (None, "", "manuell") else ''}</td>
           <td>{contact_cell}</td>
           <td>{t.get('value','') or '<span style="color:#9ca3af">–</span>'}</td>
           <td>{prio_badge(t['priority'])}</td>
@@ -2250,7 +2813,8 @@ def build_dashboard():
 
     # ── CONTACTS TABLE (grouped by firma) ──
     leads_n = sum(1 for c in contacts if any(s in c["status"].lower() for s in ("lead","interessent")))
-    kunden_n = sum(1 for c in contacts if "kunde" in c["status"].lower())
+    kunden_n = sum(1 for c in contacts if "kunde" in c["status"].lower() and c["art"] == "mandant")
+    netz_n = sum(1 for c in contacts if c["art"] == "netzwerk")
     firma_groups: dict = {}
     for c in contacts:
         firma_groups.setdefault(c["firma"], []).append(c)
@@ -2265,10 +2829,10 @@ def build_dashboard():
         ort = (c.get("address") or "").split(",")[-1].strip()
         firma_esc = c['firma'].replace("'", "\\'").replace('"', '&quot;')
         nxt = c.get("next_action") or ""
-        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" class="c-zeile" tabindex="0" role="button"
+        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" data-art="{_h(c['art'])}" class="c-zeile" tabindex="0" role="button"
               aria-label="Akte {_h(c['firma'])} öffnen" onclick="openAkte('{cid}')" onkeydown="if(event.key==='Enter'||event.key===' '){{event.preventDefault();openAkte('{cid}')}}">
           <td><strong>{_h(c['firma'])}</strong>{'<span class="acos-badge" title="Wird in ACOS geführt">ACOS</span>' if c.get('acos_fuehren') else ''}{f'<small class="c-ort"> · {_h(ort)}</small>' if ort else ''}{person_line}</td>
-          <td>{status_badge(c['status'])}</td>
+          <td>{_beziehung_html(c)}</td>
           <td>{_h(c.get('branch','')) or '<span style="color:#9ca3af">–</span>'}</td>
           <td>{c.get('last_contact','') or '<span style="color:#9ca3af">–</span>'}</td>
           <td class="c-next">{_h(nxt) or '<span style="color:#9ca3af">–</span>'}</td>
@@ -2299,14 +2863,15 @@ def build_dashboard():
         person_rows = '<tr><td colspan="5" style="text-align:center;color:#6b7280">Keine Personen</td></tr>'
     kampagne_options = "".join(f'<option value="{k}">{k}</option>' for k in kampagnen)
     projekt_options = "".join(
-        f'<option value="{o["id"]}">{((o["kontakt"] + " — ") if o.get("kontakt") else "")}{o["title"]}</option>'
+        f'<option value="{o["id"]}" data-firma="{o.get("firmaId") or ""}">{((_h(o["kontakt"]) + " — ") if o.get("kontakt") else "")}{_h(o["title"])}</option>'
         for o in sorted(opps, key=lambda o: (o.get("kontakt") or "￿", o["title"]))
     )
+    firma_options = "".join(f'<option value="{_h(c["id"])}">{_h(c["firma"])}</option>'
+                            for c in sorted(contacts, key=lambda c: c["firma"].lower()))
 
     # ── PROJEKT TABLE (Firma-Aufgaben+Opportunities zusammengeführt, 2026-08-21) ──
-    OPP_STATUS_LABELS = {"lead": "Angebahnt", "aktiv": "Aktiv", "pausiert": "Pausiert", "won": "Gewonnen",
-                          "lost": "Verloren", "kunde": "Kunde", "inaktiv": "Inaktiv"}
-    opp_status_by_id = {str(o["id"]): (o.get("status") or "aktiv").split(",")[0].strip().lower() for o in opps}
+    OPP_STATUS_LABELS = PROJEKT_PHASEN
+    opp_status_by_id = {str(o["id"]): (o.get("status") or "anbahnung").split(",")[0].strip().lower() for o in opps}
     def opp_status_badge(s):
         parts = [x.strip() for x in s.split(",") if x.strip()]
         return " ".join(badge(OPP_STATUS_LABELS.get(x.lower(), x), STATUS_COLORS.get(x.lower(), "#6b7280")) for x in parts) if parts else ""
@@ -2315,6 +2880,11 @@ def build_dashboard():
         return int(re.sub(r"[^\d]", "", t.get("value", "") or "") or 0)
     def _opp_value(o):
         return int(re.sub(r"[^\d]", "", o.get("value", "") or "") or 0)
+
+    offene_je_projekt = {}
+    for t in sorted(active_tasks, key=lambda x: (x.get("deadline") or "9999", x.get("createdAt") or "")):
+        if t.get("projektId"):
+            offene_je_projekt.setdefault(str(t["projektId"]), t)
 
     project_groups = {}
     for o in opps:
@@ -2325,12 +2895,12 @@ def build_dashboard():
         project_groups.setdefault(firm, {"opps": [], "tasks": []})["tasks"].append(t)
 
     total_value = sum(_opp_value(o) for o in opps) + sum(_task_value(t) for t in active_tasks)
-    aktiv_n = sum(1 for o in opps if o["status"].lower() == "aktiv")
+    aktiv_n = sum(1 for o in opps if o["status"].lower() == "laeuft")
     value_display = f'{total_value:,}'.replace(",", ".") + " €" if total_value else "–"
 
     def _group_sort_key(item):
         firm, g = item
-        has_active_opp = any(o["status"].lower() == "aktiv" for o in g["opps"])
+        has_active_opp = any(o["status"].lower() == "laeuft" for o in g["opps"])
         nearest_dl = min([o.get("deadline") or "9999" for o in g["opps"]] + [t.get("deadline") or "9999" for t in g["tasks"]], default="9999")
         return (firm == "Intern", 0 if has_active_opp else 1, nearest_dl, firm)
 
@@ -2353,17 +2923,17 @@ def build_dashboard():
         </tr>"""
         for o in g["opps"]:
             oid = o["id"].replace("'", "\\'")
-            o_st = (o.get("status") or "aktiv").split(",")[0].strip().lower()
+            o_st = (o.get("status") or "anbahnung").split(",")[0].strip().lower()
             project_rows += f"""<tr class="firma-sub-row" data-group="{gid}" data-ostatus="{o_st}" data-oid="{oid}" style="display:none" onclick="event.stopPropagation();openProjektAkte('{oid}')">
               <td>📁 {o['title']}{f'<br><small style="color:#9ca3af">{o["summary"]}</small>' if o.get('summary') else ''}</td>
-              <td>{o.get('next_action','') or '<span style="color:#9ca3af">–</span>'}</td>
-              <td>{o.get('value','') or '<span style="color:#9ca3af">–</span>'} <small style="color:var(--text2)">({o.get('probability','') or '–'})</small></td>
-              <td>{opp_status_badge(o['status'])}</td>
+              <td>{_naechster_schritt_html(o, offene_je_projekt.get(str(o["id"])))}</td>
+              <td>{o.get('value','') or '<span style="color:#9ca3af">–</span>'} <small style="color:var(--text2)">({o.get('probability','') or '–'})</small><br><small style="color:var(--text2)">{_h(o.get('honorar_kurz',''))}</small></td>
+              <td>{opp_status_badge(o['status'])}{f'<br><small style="color:var(--text2)">{_h(o["verlustgrund_label"])}</small>' if o_st == 'verloren' and o.get('verlustgrund_label') else ''}</td>
               <td>{deadline_cell(o.get('deadline',''))}</td>
             </tr>"""
         for t in g["tasks"]:
             tid = t["taskId"]
-            t_st = opp_status_by_id.get(str(t.get("projektId")), "aktiv")
+            t_st = opp_status_by_id.get(str(t.get("projektId")), "laeuft")
             project_rows += f"""<tr class="firma-sub-row" data-group="{gid}" data-ostatus="{t_st}" style="display:none" onclick="event.stopPropagation();editTask('{tid}')">
               <td>📋 {t['title']}</td>
               <td><span class="task-id">{tid}</span></td>
@@ -2373,6 +2943,31 @@ def build_dashboard():
             </tr>"""
     if not project_rows:
         project_rows = '<tr><td colspan="5" style="text-align:center;color:#6b7280">Keine Projekte</td></tr>'
+
+    # ── PHASEN-SPALTEN (Umbau Schritt 7) ──
+    def _eur(n):
+        return f'{n:,}'.replace(",", ".") + " €"
+    summe_phase = {k: sum(_opp_value(o) for o in opps if _phase(o["status"]) == k) for k in PROJEKT_PHASEN}
+    projekt_summe = (f'Offene Angebote {_eur(summe_phase["angebot"])} · laufende Aufträge {_eur(summe_phase["laeuft"])}'
+                     ' <span style="color:var(--text2)">(ohne Erfolgsprovisionen)</span>')
+    board_html = ""
+    for k in ("anbahnung", "angebot", "laeuft", "abgeschlossen"):
+        karten = ""
+        for o in sorted([o for o in opps if _phase(o["status"]) == k], key=lambda o: (o.get("kontakt") or "", o["title"])):
+            oid = o["id"].replace("'", "\\'")
+            karten += (f'<button type="button" class="pb-karte" onclick="openProjektAkte(\'{oid}\')">'
+                       f'<span class="pb-firma">{_h(o.get("kontakt") or "ohne Unternehmen")}</span>'
+                       f'<span class="pb-titel">{_h(o["title"])}</span>'
+                       + (f'<span class="pb-wert">{_h(o["value"])}</span>' if o.get("value") else "")
+                       + (f'<span class="pb-honorar">{_h(o["honorar_kurz"])}</span>' if o.get("honorarart", "offen") != "offen" else "")
+                       + _naechster_schritt_html(o, offene_je_projekt.get(str(o["id"]))) + '</button>')
+        n = sum(1 for o in opps if _phase(o["status"]) == k)
+        info = f'{n}' + (f' · {_eur(summe_phase[k])}' if summe_phase[k] else "")
+        board_html += (f'<div class="pb-spalte"><div class="pb-kopf"><strong>{PROJEKT_PHASEN[k]}</strong><span>{info}</span></div>'
+                       + (karten or '<p class="pb-leer">Keine Projekte</p>') + '</div>')
+    verloren_n = sum(1 for o in opps if _phase(o["status"]) == "verloren")
+    honorarart_opts = "".join(f'<option value="{k}">{_h(l)}</option>' for k, l in HONORARARTEN.items())
+    verlust_opts = '<option value="">– bitte wählen –</option>' + "".join(f'<option value="{k}">{_h(l)}</option>' for k, l in VERLUSTGRUENDE.items())
 
     # ── HEUTE PANEL (2026-08-21) ──
     heute_task_rows = ""
@@ -2464,6 +3059,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .nav-menu .tab:hover{{background:var(--surface2)}}
 .nav-menu .tab.active{{border-left-color:var(--accent2);background:var(--surface2)}}
 .nav-menu .tab.is-fav{{display:none}}
+.nav-direkt>.tab.is-fav{{display:none}}
+.nav-direkt>.tab{{padding:.7rem 1rem}}
 .nav-burger{{display:none;background:none;border:0;font-size:1rem;font-weight:600;color:var(--text);padding:.7rem 0;cursor:pointer;font-family:inherit}}
 @media (max-width:700px){{
   .nav{{padding:0 1rem;flex-direction:column}}
@@ -2553,11 +3150,93 @@ tr.hidden{{display:none}}
 /* MODAL */
 #nav .nav-menu .tab.nav-versteckt{{display:none!important}}
 /* Heute: Journal, Abschluss, Briefing (Migration 010) */
+.hs-kopf{{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}}
+.hs-datum{{font-size:.85rem;color:var(--text2)}}
+.hs-gruss{{margin:.15rem 0 .25rem;font-size:1.6rem}}
+.hs-lage{{font-size:.92rem;color:#334155}}
+.hs-aktionen{{display:flex;gap:.5rem;flex-wrap:wrap}}
+.hs-raster{{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:1rem;align-items:start}}
+.hs-spalte{{display:flex;flex-direction:column;gap:1rem;min-width:0}}
+.hs-karte{{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}}
+.hs-kk{{display:flex;align-items:center;gap:.6rem;padding:.75rem 1rem;border-bottom:1px solid var(--border)}}
+.hs-kk h3{{margin:0;font-size:1rem;flex:1 1 auto}}
+.hs-kk span{{font-size:.8rem;color:var(--text2)}}
+.hs-kk a,.hs-kk .hz-link{{font-size:.82rem}}
+.hs-karte>div:last-child{{padding-bottom:.4rem}}
+.hs-karte .hz-leer{{padding:.8rem 1rem;margin:0}}
+.hs-gruppe{{padding:.65rem 1rem .2rem;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text2)}}
+.hs-task{{display:flex;align-items:flex-start;gap:.7rem;padding:.55rem 1rem;border-bottom:1px solid #f1f5f9}}
+.hs-task input{{width:19px;height:19px;margin-top:2px;flex:0 0 auto}}
+.hs-task.erl .hs-titel{{text-decoration:line-through;color:var(--text2)}}
+.hs-tt{{flex:1 1 auto;min-width:0}}
+.hs-titel{{background:none;border:0;padding:0;font:inherit;font-size:.9rem;font-weight:500;color:var(--text);text-align:left;cursor:pointer}}
+.hs-titel:hover{{color:#4338ca}}
+.hs-wo{{font-size:.78rem;color:var(--text2);margin-top:2px}}
+.hs-due{{font-size:.78rem;color:var(--text2);white-space:nowrap}}
+.hs-due.rot{{color:#b91c1c;font-weight:600}}
+.hs-mail{{padding:.6rem 1rem;border-bottom:1px solid #f1f5f9}}
+.hs-mk{{display:flex;gap:.3rem;align-items:baseline;font-size:.86rem;min-width:0}}
+.hs-mvon{{font-weight:600;white-space:nowrap}}
+.hs-mbetr{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#334155}}
+.hs-mzeit{{font-size:.75rem;color:var(--text2);white-space:nowrap}}
+.hs-mv{{display:flex;gap:.5rem;align-items:center;margin-top:.35rem;flex-wrap:wrap}}
+.hs-vorschlag{{flex:1 1 200px;font-size:.8rem;color:var(--text2)}}
+.hs-termin{{display:grid;grid-template-columns:64px minmax(0,1fr);gap:.75rem;padding:.65rem 1rem;border-bottom:1px solid #f1f5f9}}
+.hs-termin.vorbei .hs-ttitel,.hs-termin.vorbei .hs-zeit{{color:var(--text2)}}
+.hs-termin.laeuft{{background:#eef2ff}}
+.hs-zeit{{font-weight:600;font-size:.88rem;display:flex;flex-direction:column;overflow-wrap:anywhere}}
+.hs-termin.ganztag .hs-zeit{{font-size:.72rem;font-weight:500;color:var(--text2)}}
+#hs-termine>.hz-meta{{padding:0 1rem}}
+.hs-zeit small{{font-weight:400;color:var(--text2);font-size:.74rem}}
+.hs-ttitel{{font-size:.9rem;font-weight:500}}
+.hs-vorb{{font-size:.78rem;color:#92400e;background:#fffbeb;border-radius:6px;padding:.3rem .5rem;margin-top:.35rem}}
+.hs-ok{{font-size:.8rem;color:#166534;margin-top:.3rem}}
+.hs-zuo select{{margin-top:.35rem;padding:.25rem .4rem;border:1px solid #cbd5e1;border-radius:6px;font:inherit;font-size:.8rem;max-width:100%}}
+.hs-nk{{display:flex;gap:.5rem;align-items:center;margin-top:.4rem;flex-wrap:wrap}}
+.hs-notiz textarea{{width:100%;box-sizing:border-box;margin-top:.4rem;padding:.45rem .55rem;border:1px solid #cbd5e1;border-radius:8px;font:inherit;font-size:.86rem;resize:vertical}}
+.hs-jetzt{{display:flex;align-items:center;gap:.5rem;padding:.1rem 1rem;font-size:.72rem;font-weight:600;color:#dc2626}}
+.hs-jetzt i{{flex:1 1 auto;height:2px;background:#dc2626}}
+.hs-naechst{{padding:.3rem 1rem;font-size:.82rem}}
+.hs-naechst span{{color:var(--text2);margin-right:.3rem}}
+.hs-blick{{display:flex;gap:.6rem;align-items:flex-start;padding:.55rem 1rem;border-bottom:1px solid #f1f5f9;font-size:.85rem}}
+.hs-punkt{{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:.4rem;background:#f59e0b}}
+.hs-punkt.rot{{background:#dc2626}}.hs-punkt.grau{{background:#94a3b8}}
+.hs-bt{{flex:1 1 auto;min-width:0}}
+.hs-ba{{white-space:nowrap;font-size:.8rem}}
+@media (max-width:900px){{ .hs-raster{{grid-template-columns:1fr}} }}
+.r-kopf{{max-width:980px}}
+.r-suche{{display:flex;align-items:center;gap:.6rem;border:2px solid #a5b4fc;border-radius:12px;padding:.55rem .8rem;background:var(--surface)}}
+.r-suche input{{flex:1 1 auto;border:0;outline:0;font:inherit;font-size:1.05rem;background:transparent;min-width:0}}
+.r-hilfe{{font-size:.8rem;color:var(--text2);margin:.4rem 0 .8rem}}
+.r-filter{{display:flex;gap:.8rem;flex-wrap:wrap;margin:.7rem 0}}
+.r-filter label{{display:flex;flex-direction:column;gap:.2rem;font-size:.78rem;color:var(--text2)}}
+.r-filter select{{padding:.35rem .5rem;border:1px solid #cbd5e1;border-radius:8px;font:inherit;font-size:.86rem;background:var(--surface);max-width:260px}}
+#r-chips{{display:flex;gap:6px;flex-wrap:wrap}}
+.r-info{{font-size:.82rem;color:var(--text2);margin:.6rem 0 .4rem}}
+#r-liste{{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface);max-width:980px}}
+.r-treffer{{display:grid;grid-template-columns:118px minmax(0,1fr) auto;gap:.8rem;align-items:start;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid #f1f5f9;padding:.65rem .9rem;font:inherit;color:var(--text);cursor:pointer}}
+.r-treffer:hover{{background:#f8fafc}}
+.r-b{{display:inline-block;font-size:.72rem;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap}}
+.r-b-unternehmen{{color:#3730a3;background:#eef2ff}}.r-b-kontakt{{color:#0f766e;background:#ccfbf1}}.r-b-projekt{{color:#166534;background:#dcfce7}}
+.r-b-aufgabe{{color:#92400e;background:#fef3c7}}.r-b-journal{{color:#475569;background:#e2e8f0}}.r-b-mail{{color:#1e40af;background:#dbeafe}}
+.r-b-fachwissen{{color:#9d174d;background:#fce7f3}}.r-b-kundendokument{{color:#6b21a8;background:#f3e8ff}}
+.r-inhalt{{display:flex;flex-direction:column;gap:2px;min-width:0}}
+.r-titel{{font-weight:600;font-size:.9rem}}
+.r-text{{font-size:.82rem;color:#334155;overflow-wrap:anywhere}}
+.r-ort{{font-size:.76rem;color:var(--text2)}}
+.r-datum{{font-size:.76rem;color:var(--text2);white-space:nowrap}}
+.r-treffer mark{{background:#fef08a;color:inherit;padding:0 1px;border-radius:2px}}
+.r-leer{{padding:1.6rem 1rem;text-align:center;color:var(--text2);font-size:.88rem}}
+.r-fuss{{font-size:.78rem;color:var(--text2);margin-top:1rem;display:flex;gap:.8rem;align-items:center;flex-wrap:wrap}}
+@media (max-width:640px){{ .r-treffer{{grid-template-columns:1fr}} .r-datum{{order:-1}} }}
 .hz-block{{margin-top:1.6rem}}
 .hz-kopf{{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:.6rem}}
 .hz-kopf h3{{font-size:.95rem;font-weight:700;color:var(--text)}}
 .hz-links{{display:flex;align-items:center;gap:.75rem}}
 .hz-link{{font-size:.8rem;color:var(--accent);text-decoration:none}}
+button.hz-link{{background:none;border:0;padding:0;font-family:inherit;cursor:pointer;text-align:left}}
+button.hz-link:hover{{text-decoration:underline}}
+button.hz-link:disabled{{opacity:.5}}
 .hz-klein{{font-size:.75rem;padding:.25rem .65rem}}
 .hz-leer{{font-size:.82rem;color:var(--text2)}}
 .hz-liste{{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden}}
@@ -2704,7 +3383,9 @@ tr.hidden{{display:none}}
 .kw-kopf b{{flex:1;min-width:0}}
 .kw-datum{{color:var(--text2);font-size:.76rem;white-space:nowrap;min-width:5.2rem}}
 .kw-quelle{{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;border-radius:999px;padding:1px 8px;background:var(--bg);color:var(--text2)}}
-.kw-besprechung{{color:#0f766e}} .kw-acos{{color:#4338ca}} .kw-journal{{color:#b45309}}
+.kw-besprechung{{color:#0f766e}} .kw-acos{{color:#4338ca}} .kw-journal{{color:#b45309}} .kw-acos_dok{{color:#6d28d9}}
+a.kw-ext{{text-decoration:none}} .kw-ohnelink{{cursor:default}}
+.kw-acoslink{{margin-left:auto;font-size:.74rem;color:var(--accent,#4338ca);white-space:nowrap}}
 .kw-auszug{{font-size:.8rem;color:var(--text2);line-height:1.45}}
 .kw-auszug mark{{background:#fef08a;color:inherit;border-radius:2px;padding:0 1px}}
 .kw-warn{{font-size:.72rem;color:var(--red)}}
@@ -2733,6 +3414,106 @@ tr.hidden{{display:none}}
 .ak-pnext{{margin:0;font-size:.8rem;color:var(--text2)}}
 .ak-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}}
 .ak-feld{{display:flex;flex-direction:column;gap:.25rem;font-size:.78rem;color:var(--text2)}}
+.ak-feld[hidden]{{display:none!important}}
+.pb-leiste{{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin:.25rem 0 .75rem}}
+.pb-umschalter{{display:inline-flex;gap:2px;background:var(--surface2,#e2e8f0);border-radius:8px;padding:3px}}
+.pb-umschalter button{{border:0;background:none;padding:.35rem .8rem;border-radius:6px;font:inherit;font-size:.82rem;color:var(--text2);cursor:pointer}}
+.pb-umschalter button.on{{background:#fff;color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(15,23,42,.12)}}
+.pb-summe{{font-size:.86rem}}
+.pb-board{{display:grid;grid-template-columns:repeat(4,minmax(200px,1fr));gap:.75rem;overflow-x:auto;padding-bottom:.25rem}}
+.pb-spalte{{background:var(--surface2,#f1f5f9);border-radius:12px;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;min-width:200px}}
+.pb-kopf{{display:flex;align-items:baseline;gap:.5rem;padding:.1rem .25rem;font-size:.82rem}}
+.pb-kopf span{{margin-left:auto;color:var(--text2);font-size:.75rem}}
+.pb-karte{{display:flex;flex-direction:column;gap:.25rem;text-align:left;background:#fff;border:1px solid var(--border);border-radius:10px;padding:.6rem .7rem;font:inherit;color:var(--text);cursor:pointer}}
+.pb-karte:hover{{border-color:var(--accent)}}
+.pb-firma{{font-size:.72rem;color:var(--text2)}}
+.pb-titel{{font-size:.88rem;font-weight:600}}
+.pb-wert{{font-size:.8rem}}
+.pb-next{{font-size:.76rem;color:var(--text2)}}
+.pb-honorar{{font-size:.74rem;color:var(--text2)}}
+#view-mailreview .mr-wrap{{display:flex;flex-wrap:wrap;align-items:stretch;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}}
+.mr-liste{{flex:1 1 340px;max-width:440px;min-width:0;border-right:1px solid var(--border);display:flex;flex-direction:column}}
+.mr-kopf{{padding:14px 14px 10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px}}
+.mr-titelzeile{{display:flex;align-items:baseline;gap:10px}}
+.mr-titelzeile h2{{margin:0;font-size:1.25rem;flex:1 1 auto}}
+.mr-chips{{display:flex;gap:6px;flex-wrap:wrap}}
+.mr-chip{{border:1px solid #cbd5e1;background:#fff;border-radius:999px;padding:5px 11px;font:inherit;font-size:.82rem;color:#334155;cursor:pointer}}
+.mr-chip span{{color:var(--text2);font-weight:400}}
+.mr-chip.on{{background:#eef2ff;border-color:#a5b4fc;color:#3730a3;font-weight:600}}
+#mailreview-list{{overflow:auto;max-height:70vh}}
+.mr-zeile{{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;background:#fff;border:0;border-bottom:1px solid var(--border);padding:10px 14px;font:inherit;color:var(--text);cursor:pointer}}
+.mr-zeile:hover{{background:#f8fafc}}
+.mr-zeile.on{{background:#eef2ff;box-shadow:inset 3px 0 0 #4f46e5}}
+.mr-z1{{display:flex;gap:8px;align-items:baseline}}
+.mr-von{{flex:1 1 auto;min-width:0;font-weight:600;font-size:.88rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.mr-zeit{{font-size:.75rem;color:var(--text2);white-space:nowrap}}
+.mr-betreff{{font-size:.86rem;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.mr-z3{{display:flex;gap:6px;align-items:center;flex-wrap:wrap}}
+.mr-b{{font-size:.72rem;font-weight:600;border-radius:999px;padding:2px 8px;white-space:nowrap}}
+.mr-b-firma{{color:#3730a3;background:#eef2ff}}
+.mr-b-gelb{{color:#92400e;background:#fef3c7}}
+.mr-b-grau{{color:#475569;background:#e2e8f0}}
+.mr-anz{{font-size:.75rem;color:var(--text2)}}
+.mr-erg{{font-size:.75rem;color:#166534}}
+.mr-leer{{padding:28px 14px;text-align:center;font-size:.86rem;color:var(--text2)}}
+.mr-detail{{flex:999 1 480px;min-width:0;padding:16px 20px 22px;display:flex;flex-direction:column;gap:14px;background:#f8fafc}}
+.mr-mail{{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}}
+.mr-mail h2{{margin:0;font-size:1.1rem}}
+.mr-meta{{font-size:.8rem;color:#475569}}
+.mr-text{{font-size:.88rem;line-height:1.5;max-width:75ch;max-height:340px;overflow:auto}}
+.mr-text p{{margin:0 0 .6em}}
+.mr-vorschlag{{background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden}}
+.mr-vkopf{{padding:10px 16px;background:#f1f5f9;font-size:.88rem;font-weight:600;color:#334155}}
+.mr-block{{display:flex;flex-direction:column;gap:7px;padding:12px 16px;border-bottom:1px solid var(--border);font-size:.86rem}}
+.mr-block h3{{margin:0;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text2)}}
+.mr-block p{{margin:0}}
+.mr-zuo{{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}
+.mr-firma{{background:none;border:0;padding:0;font:inherit;font-weight:600;font-size:.95rem;color:var(--text);cursor:pointer}}
+.mr-firma:hover{{color:#4338ca;text-decoration:underline}}
+.mr-grau{{color:var(--text2);font-size:.8rem}}
+.mr-lnk{{background:none;border:0;padding:0;font:inherit;font-size:.82rem;color:#4338ca;cursor:pointer}}
+.mr-lnk:hover{{text-decoration:underline}}
+.mr-tgl{{display:inline-flex;gap:8px;align-items:center;cursor:pointer;min-height:28px}}
+.mr-tgl input{{width:17px;height:17px}}
+.mr-anh{{display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:#f8fafc;border-radius:8px}}
+.mr-anh-wahl{{display:flex;gap:18px;flex-wrap:wrap}}
+.mr-auf-felder{{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:10px;padding-left:25px}}
+.mr-auf-felder[hidden]{{display:none}}
+.mr-auf-felder label{{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:#475569}}
+.mr-auf-felder input{{padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font:inherit;font-size:.86rem}}
+.mr-aktionen{{display:flex;align-items:center;gap:8px;padding:12px 16px;flex-wrap:wrap}}
+.mr-platz{{flex:1 1 auto}}
+.mr-ign{{padding:0 16px 12px;font-size:.78rem;color:var(--text2)}}
+.mr-fertig{{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f0fdf4;color:#166534;font-size:.88rem}}
+.mr-fertig span{{flex:1 1 auto}}
+.mr-b-gruen{{color:#166534;background:#dcfce7}}
+.mr-weitere{{padding-left:2px}}
+.mr-lead{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}}
+.mr-lead label{{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:#475569}}
+.mr-lead input,.mr-anh-firma{{padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font:inherit;font-size:.86rem;background:#fff}}
+.mr-anh-firma{{padding:4px 8px;font-size:.8rem}}
+.mr-fuss{{margin:.6rem 0 0;font-size:.8rem;color:var(--text2)}}
+@media (max-width:760px){{ .mr-liste{{max-width:none;border-right:0;border-bottom:1px solid var(--border)}} #mailreview-list{{max-height:45vh}} .mr-auf-felder{{grid-template-columns:1fr;padding-left:0}} }}
+
+.ak-warn{{color:#b45309;font-weight:600}}
+.o-v[hidden]{{display:none!important}}
+.pb-ohne{{align-self:flex-start;font-size:.72rem;font-weight:600;color:#92400e;background:#fef3c7;border-radius:6px;padding:.15rem .45rem}}
+.pb-leer{{font-size:.78rem;color:var(--text2);padding:.2rem .3rem}}
+.pb-hinweis{{font-size:.76rem;color:var(--text2);margin:.4rem 0 0}}
+@media (max-width:900px){{.pb-board{{grid-template-columns:repeat(4,minmax(220px,1fr))}}}}
+.t-herkunft{{margin-left:.45rem;font-size:.7rem;font-weight:600;color:#1e40af;background:#dbeafe;border-radius:999px;padding:.05rem .45rem;white-space:nowrap}}
+.ak-bet{{display:grid;grid-template-columns:8.5rem minmax(0,1fr) auto auto;gap:.6rem;align-items:center;padding:.5rem .7rem;background:#faf5ff;border-radius:8px;margin-bottom:.35rem;font-size:.86rem}}
+.ak-bet-rolle{{font-size:.74rem;font-weight:600;color:#6b21a8}}
+.ak-bet-firma{{text-align:left;font-weight:600;color:var(--text)}}
+.ak-bet-kontakt{{color:var(--text2);font-size:.8rem}}
+.ak-bet-weg{{border:0;background:none;color:var(--text2);font-size:1.1rem;line-height:1;cursor:pointer;padding:.2rem .45rem;border-radius:6px}}
+.ak-bet-weg:hover{{background:#ede9fe;color:#6b21a8}}
+.ak-vertrag{{border:1px solid var(--border);border-radius:10px;padding:.7rem .85rem;margin-bottom:.5rem}}
+.ak-vertrag .ak-kz{{gap:.6rem;flex-wrap:wrap}}
+.ak-vaktion{{margin-left:auto;display:inline-flex;gap:.3rem;align-items:center}}
+.ak-vfrist{{font-size:.74rem;font-weight:600;color:#0f766e;background:#ccfbf1;border-radius:999px;padding:.12rem .55rem}}
+.ak-vfrist.bald{{color:#92400e;background:#fef3c7}}
+.ak-vfrist.vorbei{{color:#b91c1c;background:#fee2e2}}
 .ak-feld input,.ak-feld select,.ak-feld textarea{{padding:.5rem .6rem;border:1px solid var(--border);border-radius:7px;font:inherit;font-size:.88rem;color:var(--text);background:var(--surface)}}
 .ak-voll{{grid-column:1/-1}}
 .ak-pills{{display:flex;flex-wrap:wrap;gap:.35rem}}
@@ -2840,6 +3621,7 @@ tr.st-hidden{{display:none !important}}
 .j-tech{{font-family:ui-monospace,Menlo,monospace;font-size:.75rem;color:var(--text2)}}
 .j-sub{{font-size:.72rem;color:var(--text2)}}
 .j-art{{display:inline-block;padding:.1rem .45rem;border-radius:999px;font-size:.72rem;background:var(--surface2);border:1px solid var(--border);white-space:nowrap}}
+.j-art-dokument{{background:#f3e8ff;border-color:#e9d5ff;color:#6b21a8}}
 .j-art-telefonat{{background:#e0f2fe;border-color:#bae6fd;color:#075985}}
 .j-art-meeting{{background:#ede9fe;border-color:#ddd6fe;color:#5b21b6}}
 .j-art-email{{background:#fef3c7;border-color:#fde68a;color:#92400e}}
@@ -2920,12 +3702,13 @@ tr.st-hidden{{display:none !important}}
   .j-tbl td[data-l]:before{{content:attr(data-l) ": ";color:var(--text2);font-size:.72rem}}
   .j-text{{min-width:0}}
 }}
+.art-aus{{display:none!important}}
 </style>
 </head>
 <body>
-
+{_test_banner()}
 <div class="header">
-  <h1>⚡ CRM Dashboard – digitalkonzepte.biz</h1>
+  <h1>CRM · Digitale Konzepte</h1>
   <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
     <span class="header-meta">Stand: {generated} · <a href="javascript:location.reload()">Aktualisieren</a></span>
     <div style="display:flex;gap:.4rem">
@@ -2957,8 +3740,10 @@ tr.st-hidden{{display:none !important}}
       <div class="nav-menu">
         <div class="tab" data-panel="contacts" onclick="showPanel('contacts',this)">🏢 Unternehmen ({len(contacts)})</div>
         <div class="tab" data-panel="persons" onclick="showPanel('persons',this)">👤 Kontakte ({len(persons)})</div>
-        <div class="tab" id="tab-wissen" data-panel="wissen" onclick="showPanel('wissen',this)">🔎 Recherche</div>
       </div>
+    </div>
+    <div class="nav-group nav-direkt">
+      <div class="tab" id="tab-wissen" data-panel="wissen" onclick="showPanel('wissen',this)">🔎 Recherche</div>
     </div>
     <div class="nav-group nav-rechts">
       <button class="nav-gbtn" type="button" onclick="navGruppe(event,this)" title="System"><span class="nav-icon">⚙️</span><span class="nav-glabel">System</span> <span class="nav-pfeil">▾</span></button>
@@ -2970,28 +3755,38 @@ tr.st-hidden{{display:none !important}}
   </div>
 </nav>
 
-<div class="alerts">{alert_html}</div>
+<!-- Hinweise auf faellige Aufgaben stehen seit Umbau 11 auf "Heute" -->
 
 <div class="panels">
 
 <!-- ══ HEUTE ═════════════════════════════════════════════════════════ -->
 <div id="view-heute" class="panel active">
   <div id="h-briefing"></div>
-  <div class="panel-header">
-    <h2>☀️ Was ist heute zu erledigen</h2>
-    <div class="toolbar">
-      <div class="kpi-row">
-        <div class="kpi"><span class="kpi-val">{len(overdue)}</span><span class="kpi-label">Überfällig</span></div>
-        <div class="kpi"><span class="kpi-val">{len(today_t)}</span><span class="kpi-label">Heute fällig</span></div>
-        <div class="kpi"><span class="kpi-val">{len(heute_candidates)}</span><span class="kpi-label">Neue Signale</span></div>
-      </div>
+  <div class="hs-kopf">
+    <div><div class="hs-datum" id="hs-datum"></div><h2 class="hs-gruss" id="hs-gruss">Heute</h2><div class="hs-lage" id="hs-lage">Wird geladen…</div></div>
+    <div class="hs-aktionen">
+      <button type="button" class="btn btn-ghost" onclick="newTask()">＋ Aufgabe</button>
+      <button type="button" class="btn btn-ghost" onclick="journalNeuAusHeute()">＋ Journal-Eintrag</button>
+      <button type="button" class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
     </div>
   </div>
-  <p style="font-size:.82rem;color:var(--text2);margin-bottom:.75rem">Eigene fällige Aufgaben plus offene Hinweise aus den Firmenakten, die noch keine Aufgabe sind.</p>
-  <table id="h-tbl">
-    <thead><tr><th>Quelle</th><th>Worum es geht</th><th>Firma</th><th>Deadline</th><th></th></tr></thead>
-    <tbody>{heute_rows}</tbody>
-  </table>
+  <div class="hs-raster">
+    <div class="hs-spalte">
+      <section class="hs-karte" aria-label="Aufgaben"><div class="hs-kk"><h3>Zu erledigen</h3><span id="hs-erl"></span>
+        <a href="#" class="hz-link" onclick="showPanel('tasks', document.querySelector('.tab[data-panel=tasks]'));return false">Alle Aufgaben</a></div>
+        <div id="hs-aufgaben"><p class="hz-leer">Wird geladen…</p></div></section>
+      <section class="hs-karte" aria-label="Mail-Review"><div class="hs-kk"><h3>Mail-Review</h3><span id="hs-mailzahl"></span>
+        <a href="#" class="hz-link" onclick="showPanel('mailreview', document.querySelector('.tab[data-panel=mailreview]'));return false">Alle prüfen</a></div>
+        <div id="hs-mails"></div></section>
+    </div>
+    <div class="hs-spalte">
+      <section class="hs-karte" aria-label="Termine"><div class="hs-kk"><h3>Termine</h3><span id="hs-kalstand"></span>
+        <button type="button" class="hz-link" title="Kalender jetzt abrufen" onclick="kalenderAbgleich(this)">↺ Abrufen</button></div>
+        <div id="hs-termine"></div></section>
+      <section class="hs-karte" aria-label="Im Blick"><div class="hs-kk"><h3>Im Blick</h3><span>ohne Termin, aber fällig</span></div>
+        <div id="hs-blick"></div></section>
+    </div>
+  </div>
 
   <section class="hz-block">
     <div class="hz-kopf"><h3>📓 Heute erledigt und erfasst</h3>
@@ -3033,7 +3828,7 @@ tr.st-hidden{{display:none !important}}
     </select>
   </div>
   <table id="t-tbl">
-    <thead><tr><th>ID</th><th>Aufgabe</th><th>Kontakt</th><th>Wert</th><th>Prio</th><th>Status</th><th>Deadline</th></tr></thead>
+    <thead><tr><th>ID</th><th>Aufgabe</th><th>Unternehmen</th><th>Wert</th><th>Prio</th><th>Status</th><th>Deadline</th></tr></thead>
     <tbody>{task_rows}</tbody>
   </table>
 </div>
@@ -3047,12 +3842,16 @@ tr.st-hidden{{display:none !important}}
         <div class="kpi"><span class="kpi-val">{len(contacts)}</span><span class="kpi-label">Gesamt</span></div>
         <div class="kpi"><span class="kpi-val">{leads_n}</span><span class="kpi-label">Leads</span></div>
         <div class="kpi"><span class="kpi-val">{kunden_n}</span><span class="kpi-label">Kunden</span></div>
+        <div class="kpi"><span class="kpi-val">{netz_n}</span><span class="kpi-label">Netzwerk</span></div>
       </div>
       <button class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
     </div>
   </div>
   <div class="filter-bar">
     <input class="search-input" placeholder="Suchen..." oninput="filterTable('c-tbl',this.value)">
+    <select class="filter-select" onchange="filterArt('c-tbl',this.value)" aria-label="Beziehung filtern">
+      <option value="">Alle Beziehungen</option><option value="mandant">Mandanten</option><option value="netzwerk">Netzwerk</option><option value="lieferant">Lieferanten</option><option value="intern">Eigenes Unternehmen</option>
+    </select>
     <select class="filter-select" onchange="filterByCol('c-tbl',1,this.value)">
       <option value="">Alle Status</option>
       <option>lead</option><option>interessent</option><option>kunde</option><option>netzwerk</option><option>partner</option><option>dienstleister</option><option>aktiv</option><option>inaktiv</option><option>intern</option>
@@ -3060,7 +3859,7 @@ tr.st-hidden{{display:none !important}}
   </div>
   <div style="overflow-y:auto;max-height:60vh;border:1px solid var(--border);border-radius:8px">
   <table id="c-tbl">
-    <thead><tr><th>Firma / Personen</th><th>Status</th><th>Branche</th><th>Letzter Kontakt</th><th>Nächster Schritt</th></tr></thead>
+    <thead><tr><th>Firma / Personen</th><th>Beziehung</th><th>Branche</th><th>Letzter Kontakt</th><th>Nächster Schritt</th></tr></thead>
     <tbody>{contact_rows}</tbody>
   </table>
   </div>
@@ -3105,40 +3904,48 @@ tr.st-hidden{{display:none !important}}
       <button class="btn btn-primary" onclick="newOpp()">＋ Projekt</button>
     </div>
   </div>
+  <div class="pb-leiste">
+    <div class="pb-umschalter" role="group" aria-label="Ansicht">
+      <button type="button" id="pb-btn-phasen" onclick="projektAnsicht('phasen')">Phasen</button>
+      <button type="button" id="pb-btn-liste" onclick="projektAnsicht('liste')">Liste</button>
+    </div>
+    <span class="pb-summe">{projekt_summe}</span>
+  </div>
+  <div id="pb-board" class="pb-board">{board_html}</div>
+  <p id="pb-verloren" class="pb-hinweis">{f'{verloren_n} verlorene(s) Projekt(e) stehen in der Liste (Filter „Verloren“).' if verloren_n else ''}</p>
+  <div id="pb-liste">
   <p style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">Gruppiert nach Kunde – Klick auf eine Zeile klappt Projekte und zugehörige Aufgaben auf.</p>
   <div class="filter-bar" style="flex-wrap:wrap">
     <input class="search-input" placeholder="Suchen..." oninput="filterTable('o-tbl',this.value)">
     <div id="o-status-filter" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-      <span style="font-size:.75rem;color:var(--text2)">Status:</span>
-      <button type="button" class="status-pill" data-val="lead" onclick="toggleProjektStatus(this)">Angebahnt</button>
-      <button type="button" class="status-pill" data-val="aktiv" onclick="toggleProjektStatus(this)">Aktiv</button>
-      <button type="button" class="status-pill" data-val="pausiert" onclick="toggleProjektStatus(this)">Pausiert</button>
-      <button type="button" class="status-pill" data-val="won" onclick="toggleProjektStatus(this)">Gewonnen</button>
-      <button type="button" class="status-pill" data-val="lost" onclick="toggleProjektStatus(this)">Verloren</button>
-      <button type="button" class="status-pill" data-val="inaktiv" onclick="toggleProjektStatus(this)">Inaktiv</button>
+      <span style="font-size:.75rem;color:var(--text2)">Phase:</span>
+      <button type="button" class="status-pill" data-val="anbahnung" onclick="toggleProjektStatus(this)">Anbahnung</button>
+      <button type="button" class="status-pill" data-val="angebot" onclick="toggleProjektStatus(this)">Angebot raus</button>
+      <button type="button" class="status-pill" data-val="laeuft" onclick="toggleProjektStatus(this)">Läuft</button>
+      <button type="button" class="status-pill" data-val="abgeschlossen" onclick="toggleProjektStatus(this)">Abgeschlossen</button>
+      <button type="button" class="status-pill" data-val="verloren" onclick="toggleProjektStatus(this)">Verloren</button>
     </div>
   </div>
   <table id="o-tbl">
-    <thead><tr><th>Kunde / Projekt</th><th>Details</th><th>Wert</th><th>Status</th><th>Frist</th></tr></thead>
+    <thead><tr><th>Kunde / Projekt</th><th>Nächster Schritt</th><th>Wert</th><th>Phase</th><th>Frist</th></tr></thead>
     <tbody>{project_rows}</tbody>
   </table>
+  </div>
 </div>
 
 <!-- ══ MAIL-REVIEW ═══════════════════════════════════════════════════ -->
 <div id="view-mailreview" class="panel">
-  <div class="panel-header">
-    <h2>✉️ Mail-Review</h2>
-    <div class="toolbar">
-      <div class="kpi-row">
-        <div class="kpi"><span class="kpi-val" id="mr-count">{len(mail_review_items)}</span><span class="kpi-label">Offen</span></div>
+  <div class="mr-wrap">
+    <section class="mr-liste" aria-label="Eingang">
+      <div class="mr-kopf">
+        <div class="mr-titelzeile"><h2>Mail-Review</h2><button type="button" class="mr-lnk" onclick="loadMailReview()">↺ Aktualisieren</button></div>
+        <div class="mr-chips" id="mr-chips"></div>
       </div>
-      <button class="btn btn-ghost" onclick="loadMailReview()">↺ Aktualisieren</button>
-    </div>
+      <div id="mailreview-list"><div class="mr-leer">Lade…</div></div>
+    </section>
+    <section class="mr-detail" id="mr-detail" aria-label="Ausgewählte Mail"></section>
   </div>
-  <div style="font-size:.8rem;color:var(--text2);margin-bottom:.75rem">
-    Jede eingehende Mail landet hier als Vorschlag – nichts wird automatisch übernommen. „Übernehmen“ legt einen Aktivitäts-Eintrag beim zugeordneten Unternehmen an (und die vorgeschlagene Aufgabe, falls vorhanden). Unbekannte Absender zuerst über „Zuordnen / anlegen“ einem Unternehmen zuordnen. „Ignorieren“ blendet Absender oder Domain künftig aus, „Verwerfen“ löscht nur diesen Vorschlag.
-  </div>
-  <div id="mailreview-list"><div class="log-empty">Lade…</div></div>
+  <p class="mr-fuss">Nichts landet ohne deinen Klick im CRM. „Nicht ins CRM“ nimmt die Mail aus dem Review, im Postfach bleibt sie unverändert. Erledigtes bleibt 30 Tage sichtbar und lässt sich zurücknehmen.</p>
 </div>
 
 <!-- ══ JOURNAL (2026-10-19) ══════════════════════════════════════ -->
@@ -3204,22 +4011,22 @@ tr.st-hidden{{display:none !important}}
 
 <!-- ══ WISSEN (Migration 005) ════════════════════════════════════════ -->
 <div id="view-wissen" class="panel">
-  <div class="panel-header">
-    <h2>🔎 Recherche</h2>
-    <div class="toolbar">
-      <span class="w-stand" id="w-stand"></span>
-      <button class="btn btn-ghost" id="w-sync-btn" onclick="wissenAbgleich()">↻ Jetzt abgleichen</button>
+  <div class="r-kopf">
+    <h2 style="margin:.2rem 0 .8rem">🔎 Recherche</h2>
+    <label class="r-suche"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input type="search" id="r-q" placeholder="z. B. Liquiditätsplanung Muster Logistik" aria-label="Freitext oder Stichworte" oninput="rechercheFilter(300)" onkeydown="if(event.key==='Enter')rechercheFilter(0)"></label>
+    <p class="r-hilfe">Freitext oder Stichworte. Mehrere Begriffe werden kombiniert, „in Anführungszeichen“ sucht die genaue Wortfolge. Durchsucht Stammdaten, Projekte, Aufgaben, Journal, Mails, Fachwissen und die Kundenordner.</p>
+    <div class="r-filter">
+      <label>Zeitraum<select id="r-zeit" onchange="rechercheFilter(0)"><option value="">Beliebig</option><option value="30">Letzte 30 Tage</option><option value="jahr">Dieses Jahr</option></select></label>
+      <label>Unternehmen<select id="r-firma" onchange="rechercheFilter(0)"><option value="">Alle</option></select></label>
     </div>
+    <div id="r-chips"></div>
+    <div class="r-info" id="r-info"></div>
   </div>
-  <div id="w-hinweis" class="w-hinweis" style="display:none"></div>
-  <div class="filter-bar">
-    <input class="search-input" id="w-q" placeholder="Fachwissen und Vorlagen durchsuchen, z. B. StaRUG Schutzschirm" oninput="wissenFilter(350)">
-    <select id="w-wurzel" class="j-select" onchange="wissenFilter()"><option value="">Alle Ordner</option></select>
-    <label class="w-check"><input type="checkbox" id="w-namen" onchange="wissenFilter()"> nur mit CRM-Namen</label>
-    <label class="w-check"><input type="checkbox" id="w-probleme" onchange="wissenFilter()"> nur Probleme</label>
-  </div>
-  <div id="w-list"><div class="log-empty">Lade…</div></div>
-  <div id="w-pager" class="j-pager"></div>
+  <div id="r-liste"><div class="r-leer">Suchbegriff eingeben oder ein Unternehmen wählen.</div></div>
+  <div class="r-fuss"><span id="w-hinweis" class="w-hinweis" style="display:none"></span><span>Wissens-Abgleich:</span><span class="w-stand" id="w-stand"></span>
+    <button class="btn btn-ghost hz-klein" id="w-sync-btn" onclick="wissenAbgleich()">↻ Jetzt abgleichen</button>
+    <select id="w-wurzel" hidden></select></div>
 </div>
 
 <!-- ══ EINSTELLUNGEN (Schritt 5) ═════════════════════════════════════ -->
@@ -3350,9 +4157,11 @@ tr.st-hidden{{display:none !important}}
   <input type="hidden" id="t-id">
   <div class="form-grid">
     <div class="form-row full"><label>Aufgabe *</label><input id="t-title" placeholder="Angebot erstellen"></div>
-    <div class="form-row full"><label>Projekt *</label>
-      <select id="t-projekt"><option value="">– Projekt wählen –</option>{projekt_options}</select>
-      <small style="color:var(--text2);margin-top:3px;display:block">Aufgaben hängen zwingend an einem Projekt (Firma/Ansprechpartner kommen von dort).</small>
+    <div class="form-row"><label>Unternehmen</label>
+      <select id="t-firma" onchange="taskFirmaWechsel()"><option value="">– eigene Aufgabe –</option>{firma_options}</select>
+    </div>
+    <div class="form-row"><label>Projekt (optional)</label>
+      <select id="t-projekt" onchange="taskProjektWechsel()"><option value="">– ohne Projekt –</option>{projekt_options}</select>
     </div>
     <div class="form-row"><label>Wert (€)</label><input id="t-value" placeholder="1500€ (optional)"></div>
     <div class="form-row"><label>Kategorie</label>
@@ -3473,10 +4282,15 @@ tr.st-hidden{{display:none !important}}
     <div class="form-row full"><label>Titel *</label><input id="o-title" placeholder="KI-Automatisierung Vertrieb"></div>
     <div class="form-row"><label>Firma *</label><input id="o-contact" list="contact-names" placeholder="Firma auswählen..." oninput="updatePersonSelect('o-contact','o-person')"></div>
     <div class="form-row"><label>Ansprechpartner</label><select id="o-person"><option value="">– kein spez. Ansprechpartner –</option></select></div>
-    <div class="form-row"><label>Status</label>
-      <select id="o-status"><option value="aktiv">Aktiv</option><option value="lead">Angebahnt</option><option value="pausiert">Pausiert</option><option value="won">Gewonnen</option><option value="lost">Verloren</option><option value="inaktiv">Inaktiv</option></select>
+    <div class="form-row"><label>Phase</label>
+      <select id="o-status" onchange="oppVerlustFelder()"><option value="anbahnung">Anbahnung</option><option value="angebot">Angebot raus</option><option value="laeuft">Läuft</option><option value="abgeschlossen">Abgeschlossen</option><option value="verloren">Verloren</option></select>
     </div>
+    <div class="form-row o-v" hidden><label>Verlustgrund</label><select id="o-vgrund">{verlust_opts}</select></div>
+    <div class="form-row full o-v" hidden><label>Was war los? (optional)</label><input id="o-vnotiz"></div>
     <div class="form-row"><label>Wert (€)</label><input id="o-value" placeholder="25000"></div>
+    <div class="form-row"><label>Honorarart</label><select id="o-hart">{honorarart_opts}</select></div>
+    <div class="form-row"><label>Lexware-Nr. (Angebot/Auftrag)</label><input id="o-lex" placeholder="AN-2026-041"></div>
+    <div class="form-row full"><label>Honorar im Detail</label><input id="o-honorar" placeholder="12.000 €, 50 % bei Auftrag, Rest bei Abschluss"></div>
     <div class="form-row"><label>Wahrscheinlichkeit (%)</label><input id="o-prob" placeholder="50%"></div>
     <div class="form-row"><label>Deadline</label><input id="o-deadline" type="date"></div>
     <div class="form-row full"><label>Nächste Aktion</label><input id="o-action" placeholder="Angebot erstellen"></div>
@@ -3666,60 +4480,206 @@ function serverAction(action) {{
 }}
 
 // ── Mail-Review ───────────────────────────────────────────────────────
+// ── MAIL-REVIEW (Umbau Schritt 9: Liste + Detail, Offen/Später/Erledigt) ──
+let _mrItems = {{}};
+let _mrListe = [];
+let _mrFilter = 'offen';
+let _mrSel = null;
+function _mrE(s){{ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }}
+function _mrGruppe(it){{ return it.status === 'spaeter' ? 'spaeter' : (it.status === 'erledigt' || it.status === 'weg') ? 'erledigt' : 'offen'; }}
+function _mrDatum(it){{ return it.date ? _fmtDate(it.date) : ''; }}
+function _mrBekannt(it){{ return !!(it.match && it.match.firma); }}
 function loadMailReview(){{
   api('GET', '/api/mail-review').then(renderMailReview)
-    .catch(()=>{{ document.getElementById('mailreview-list').innerHTML =
-      '<div class="log-empty">Fehler beim Laden.</div>'; }});
+    .catch(()=>{{ document.getElementById('mailreview-list').innerHTML = '<div class="log-empty">Fehler beim Laden.</div>'; }});
 }}
+function mrFilter(f){{ _mrFilter = f; _mrSel = null; renderMailReview(_mrListe); }}
+function mrWahl(id){{ _mrSel = id; renderMailReview(_mrListe); }}
 function renderMailReview(items){{
-  const el = document.getElementById('mr-count');
-  if(el) el.textContent = items.length;
-  const list = document.getElementById('mailreview-list');
-  if(!items.length){{ list.innerHTML = '<div class="log-empty">Keine offenen Mail-Vorschläge.</div>'; return; }}
+  _mrListe = items || [];
   _mrItems = {{}};
-  items.forEach(it => _mrItems[it.id] = it);
-  list.innerHTML = items.map(it=>{{
-    const known = it.match && it.match.firma;
-    const matchTxt = it.match
-      ? (it.match.type === 'person'
-          ? `👤 ${{_escH(it.match.person||'')}} · ${{_escH(it.match.firma||'')}}`
-          : `🏢 ${{_escH(it.match.firma||'')}} (${{_escH(it.match.hinweis||'neue Person')}})`)
-      : '<span style="color:#f59e0b">❓ Absender unbekannt</span>';
-    const task = it.task_suggestion
-      ? `<div style="margin-top:.35rem;font-size:.78rem;color:var(--text2)">Aufgaben-Vorschlag: ${{_escH(it.task_suggestion.title||'')}}</div>`
-      : '';
-    const err = it.llm_error ? `<div style="margin-top:.35rem;font-size:.75rem;color:#f59e0b">⚠️ ${{_escH(it.llm_error)}}</div>` : '';
-    const anh = (it.anhaenge||[]).length ? `<div class="mr-anh">
-        <div class="mr-anh-kopf">📎 ${{it.anhaenge.length}} Anhang${{it.anhaenge.length===1?'':'e'}} · beim Übernehmen nach <code>${{_escH(it.ablage)}}</code></div>
-        ${{it.anhaenge.map(a=>`<div class="mr-anh-zeile">
-          <label><input type="checkbox" data-mr="${{it.id}}" data-anh="${{a.id}}" data-art="ablegen" ${{a.gespeichert?'checked':'disabled'}}
-            onchange="mrAnhAblegen(this)"> ${{_escH(a.name)}} <small>${{_mrGr(a.groesse)}}${{a.hinweis?' · '+_escH(a.hinweis):''}}</small></label>
-          <label class="mr-acos" title="${{it.acos_verknuepft?'Nach dem Ablegen auch in die Kundenakte in ACOS senden':'Unternehmen ist nicht mit ACOS verknüpft'}}">
-            <input type="checkbox" data-mr="${{it.id}}" data-anh="${{a.id}}" data-art="acos" ${{it.acos_verknuepft&&a.gespeichert?'':'disabled'}}> auch an ACOS</label>
-        </div>`).join('')}}</div>` : '';
-    const text = it.summary ? _escH(it.summary) : `<span style="color:var(--text2)">${{_escH((it.body_excerpt||'').slice(0,300))}}${{(it.body_excerpt||'').length>300?'…':''}}</span>`;
-    const absender = (it.from_name ? _escH(it.from_name)+' &lt;'+_escH(it.from||'')+'&gt;' : _escH(it.from||''));
-    const btnS = 'font-size:.75rem;padding:.3rem .7rem';
-    const actions = [
-      known ? `<button class="btn btn-primary" style="${{btnS}}" onclick="confirmMailReviewItem('${{it.id}}')">✓ Übernehmen</button>` : '',
-      (!known || it.match.type !== 'person') ? `<button class="btn ${{known?'btn-ghost':'btn-primary'}}" style="${{btnS}}" onclick="openMailAssign('${{it.id}}')">＋ ${{known?'Person anlegen':'Zuordnen / anlegen'}}</button>` : '',
-      `<button class="btn btn-ghost" style="${{btnS}}" onclick="ignoreMailReviewItem('${{it.id}}','adresse')" title="Mails von dieser Adresse künftig nicht mehr anzeigen">🚫 Absender ignorieren</button>`,
-      `<button class="btn btn-ghost" style="${{btnS}}" onclick="ignoreMailReviewItem('${{it.id}}','domain')" title="Mails dieser Domain künftig nicht mehr anzeigen">🚫 Domain ignorieren</button>`,
-      `<button class="btn btn-ghost" style="${{btnS}}" onclick="discardMailReviewItem('${{it.id}}')">✕ Verwerfen</button>`,
-    ].join('');
-    return `<div class="log-entry" style="flex-direction:column;align-items:stretch;gap:.4rem">
-      <div style="display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
-        <strong>${{_escH(it.subject||'(kein Betreff)')}}</strong>
-        <span class="log-date">${{_fmtDate(it.date)}}</span>
-      </div>
-      <div style="font-size:.8rem;color:var(--text2)">Von: ${{absender}} · ${{matchTxt}}${{it.category && it.category!=='Unbewertet' ? ' · Kategorie: '+_escH(it.category) : ''}}</div>
-      <div style="font-size:.85rem">${{text}}</div>
-      ${{task}}${{err}}${{anh}}
-      <div style="display:flex;gap:.5rem;margin-top:.25rem;flex-wrap:wrap">${{actions}}</div>
-    </div>`;
-  }}).join('');
+  _mrListe.forEach(it => _mrItems[it.id] = it);
+  const n = g => _mrListe.filter(it=>_mrGruppe(it) === g).length;
+  const offen = n('offen');
+  const tab = document.querySelector('.tab[data-panel="mailreview"]');
+  if(tab) tab.textContent = '✉️ Mail-Review (' + offen + ')';
+  document.getElementById('mr-chips').innerHTML = [['offen','Offen'],['spaeter','Später'],['erledigt','Erledigt']].map(([k,l])=>
+    `<button type="button" class="mr-chip ${{_mrFilter===k?'on':''}}" onclick="mrFilter('${{k}}')">${{l}} <span>${{n(k)}}</span></button>`).join('');
+  const sicht = _mrListe.filter(it=>_mrGruppe(it) === _mrFilter);
+  if(!sicht.some(it=>it.id === _mrSel)) _mrSel = sicht.length ? sicht[0].id : null;
+  const list = document.getElementById('mailreview-list');
+  list.innerHTML = sicht.length ? sicht.map(it=>{{
+    const bekannt = _mrBekannt(it);
+    const nf = (it.firmen||[]).length;
+    const [bt, bc] = bekannt ? [it.match.firma + (nf ? ' +' + nf : ''), 'mr-b-firma'] : it.lead ? ['Neuer Lead', 'mr-b-gruen'] : it.newsletter ? ['Newsletter?', 'mr-b-grau'] : ['Unbekannt', 'mr-b-gelb'];
+    const wer = it.richtung === 'aus' ? 'An ' + ((it.match && it.match.person) || it.an) : (it.from_name || it.from);
+    return `<button type="button" class="mr-zeile ${{it.id===_mrSel?'on':''}}" onclick="mrWahl('${{it.id}}')">
+      <span class="mr-z1"><span class="mr-von">${{_mrE(wer)}}</span><span class="mr-zeit">${{_mrE(_mrDatum(it))}}</span></span>
+      <span class="mr-betreff">${{_mrE(it.subject || '(kein Betreff)')}}</span>
+      <span class="mr-z3"><span class="mr-b ${{bc}}">${{_mrE(bt)}}</span>${{it.richtung==='aus'?'<span class="mr-b mr-b-grau">Gesendet</span>':''}}${{(it.anhaenge||[]).length?`<span class="mr-anz">📎 ${{it.anhaenge.length}}</span>`:''}}</span>
+      ${{_mrGruppe(it)==='erledigt' ? `<span class="mr-erg">${{_mrE(it.ergebnis)}}</span>` : ''}}
+    </button>`;
+  }}).join('') : `<div class="mr-leer">${{_mrFilter==='offen' ? 'Alles zugeordnet. Neue Mails erscheinen hier beim nächsten Abruf.' : _mrFilter==='spaeter' ? 'Nichts zurückgestellt.' : 'In den letzten 30 Tagen nichts erledigt.'}}</div>`;
+  mrDetail();
 }}
-let _mrItems = {{}};
+function mrDetail(){{
+  const box = document.getElementById('mr-detail');
+  const it = _mrItems[_mrSel];
+  if(!it){{ box.innerHTML = '<div class="mr-leer">Keine Mail ausgewählt.</div>'; return; }}
+  const bekannt = _mrBekannt(it);
+  const aus = it.richtung === 'aus';
+  const erledigt = _mrGruppe(it) === 'erledigt';
+  const nl = it.newsletter && !bekannt;
+  const lead = !bekannt && it.lead ? it.lead : null;
+  const extra = bekannt ? (it.firmen || []) : [];
+  const alleFirmen = bekannt ? [it.match.firma].concat(extra.map(f=>f.firma)) : [];
+  const absaetze = (it.body_excerpt || '').trim().split(/\\n\\s*\\n/).filter(Boolean)
+    .map(p=>`<p>${{_mrE(p).replace(/\\n/g,'<br>')}}</p>`).join('') || '<p class="mr-grau">(kein Text)</p>';
+  let h = `<article class="mr-mail"><h2>${{_mrE(it.subject || '(kein Betreff)')}}</h2>
+    <div class="mr-meta">${{aus ? 'Gesendet an <strong>' + _mrE(it.an) + '</strong>' : '<strong>' + _mrE(it.from_name || it.from) + '</strong>' + (it.from_name ? ' &lt;' + _mrE(it.from) + '&gt;' : '')}} · ${{_mrE(_mrDatum(it))}}</div>
+    <div class="mr-text">${{absaetze}}</div></article>`;
+  const titel = nl ? 'Vorschlag: nicht ins CRM' : lead ? 'Vorschlag: als Lead anlegen' : extra.length ? 'Vorschlag: auf ' + alleFirmen.length + ' Unternehmen aufteilen'
+              : bekannt ? 'Vorschlag: zuordnen' : 'Vorschlag: Absender zuordnen oder anlegen';
+  h += `<div class="mr-vorschlag"><div class="mr-vkopf">${{erledigt ? 'Erledigt' : titel}}</div>`;
+  if(erledigt){{
+    h += `<div class="mr-fertig"><span>✓ ${{_mrE(it.ergebnis)}}</span><button type="button" class="mr-lnk" onclick="mrRueckgaengig('${{it.id}}')">Rückgängig</button></div></div>`;
+    box.innerHTML = h; return;
+  }}
+  if(bekannt){{
+    const m = it.match;
+    const grund = m.type === 'person' ? (aus ? 'Empfänger ist Kontakt dort' : 'Absender ist Kontakt dort') + (m.person ? ' (' + m.person + ')' : '')
+                                      : (m.hinweis || 'zugeordnet');
+    h += `<div class="mr-block"><h3>Zuordnung</h3>
+      <div class="mr-zuo"><button type="button" class="mr-firma" onclick="openContactByName('${{_mrE(m.firma)}}')">${{_mrE(m.firma)}}</button>
+        <span class="mr-grau">${{_mrE(grund)}}</span>
+        ${{aus ? '' : `<button type="button" class="mr-lnk" onclick="openMailAssign('${{it.id}}')">${{m.type === 'person' ? 'Ändern' : 'Person anlegen / ändern'}}</button>`}}</div>
+      ${{extra.map((f,i)=>`<label class="mr-tgl mr-weitere"><input type="checkbox" class="mr-firma-x" data-firma="${{_mrE(f.firma)}}" ${{f.vorhaken === false ? '' : 'checked'}} onchange="mrFirmenWahl()"> <strong>${{_mrE(f.firma)}}</strong> <span class="mr-grau">${{_mrE(f.grund)}}</span></label>`).join('')}}
+      <label class="mr-tgl"><input type="checkbox" id="mr-journal" checked> ${{extra.length ? 'Als E-Mail ins Journal der angehakten Unternehmen' : 'Als E-Mail ins Journal von ' + _mrE(m.firma)}}</label>
+      ${{it.lead ? `<p class="mr-grau">Terminbuchung über ${{_mrE(it.lead.quelle)}}${{it.lead.termin ? ': ' + _mrE(_fmtDate(it.lead.termin)) + (it.lead.uhrzeit ? ' ' + _mrE(it.lead.uhrzeit) : '') : ''}}${{it.lead.info ? ' · ' + _mrE(it.lead.info) : ''}}</p>` : ''}}</div>`;
+  }} else if(lead){{
+    h += `<div class="mr-block"><h3>Neuer Lead</h3>
+      <p class="mr-grau">Terminbuchung über ${{_mrE(lead.quelle)}}${{lead.termin ? ' für ' + _mrE(_fmtDate(lead.termin)) + (lead.uhrzeit ? ' ' + _mrE(lead.uhrzeit) : '') : ''}}${{lead.ort ? ' (' + _mrE(lead.ort) + ')' : ''}}. Aus der Buchung vorbelegt:</p>
+      <div class="mr-lead">
+        <label>Unternehmen<input id="mr-l-firma" value="${{_mrE(lead.firma)}}" placeholder="Name des Unternehmens"></label>
+        <label>Kontakt<input id="mr-l-name" value="${{_mrE(lead.name)}}"></label>
+        <label>E-Mail<input id="mr-l-mail" type="email" value="${{_mrE(lead.email)}}"></label>
+        <label>Telefon<input id="mr-l-tel" type="tel"></label></div>
+      ${{lead.info ? `<p><strong>Anliegen:</strong> ${{_mrE(lead.info)}}</p>` : ''}}
+      <p class="mr-grau">Wird als Unternehmen mit Status Lead angelegt, Quelle ${{_mrE(lead.quelle)}}. Die Mail kommt ins Journal des neuen Unternehmens.</p></div>`;
+  }} else if(nl){{
+    h += `<div class="mr-block"><h3>Kein Kundenbezug erkannt</h3>
+      <p>Der Absender ist kein Kontakt, und die Mail hat einen Abmeldelink. Sieht nach Newsletter aus.</p>
+      <label class="mr-tgl"><input type="checkbox" id="mr-nl-ignore" checked> Mails von diesem Absender künftig nicht mehr im Review zeigen</label>
+      <button type="button" class="mr-lnk" onclick="openMailAssign('${{it.id}}')">Ist doch ein Kontakt? Zuordnen</button></div>`;
+  }} else {{
+    h += `<div class="mr-block"><h3>Absender unbekannt</h3>
+      <p>Die Adresse passt zu keinem Kontakt im CRM. Ordne sie einem Unternehmen zu oder lege es neu an.</p>
+      <div><button type="button" class="btn btn-primary" onclick="openMailAssign('${{it.id}}')">Zuordnen / anlegen</button></div></div>`;
+  }}
+  if((it.anhaenge||[]).length){{
+    h += `<div class="mr-block"><h3>Anhänge</h3>${{it.anhaenge.map(a=>`<div class="mr-anh">
+        <div><strong>${{_mrE(a.name)}}</strong> <span class="mr-grau">${{_mrGr(a.groesse)}}${{a.hinweis ? ' · ' + _mrE(a.hinweis) : ''}}</span></div>
+        <div class="mr-anh-wahl">
+          <label class="mr-tgl"><input type="checkbox" data-mr="${{it.id}}" data-anh="${{a.id}}" data-art="ablegen" ${{a.gespeichert && (bekannt || lead) ? 'checked' : ''}} ${{a.gespeichert && (bekannt || lead) ? '' : 'disabled'}} onchange="mrAnhAblegen(this)"> In den Kundenordner</label>
+          ${{alleFirmen.length > 1 ? `<label class="mr-tgl">gehört zu <select class="mr-anh-firma" data-anh="${{a.id}}">${{alleFirmen.map(f=>`<option ${{f === (a.firma_vorschlag || alleFirmen[0]) ? 'selected' : ''}}>${{_mrE(f)}}</option>`).join('')}}</select></label>` : ''}}
+          <label class="mr-tgl" title="${{it.acos_verknuepft ? 'Nach dem Ablegen auch in die Kundenakte in ACOS senden' : 'Unternehmen ist nicht mit ACOS verknüpft'}}"><input type="checkbox" data-mr="${{it.id}}" data-anh="${{a.id}}" data-art="acos" ${{it.acos_verknuepft && a.gespeichert && bekannt ? '' : 'disabled'}}> An ACOS senden</label>
+        </div></div>`).join('')}}
+      <p class="mr-grau">${{alleFirmen.length > 1 ? 'Ablage im Kundenordner des jeweiligen Unternehmens unter Mail-Eingang. ' : bekannt ? 'Ablage: ' + _mrE(it.ablage) + '. ' : ''}}An ACOS geht nichts automatisch, jeder Versand ist ein eigener Haken.</p></div>`;
+  }}
+  if(bekannt || lead){{
+    const ts = it.task_suggestion || {{}};
+    let due = ts.deadline || '';
+    if(!due && typeof ts.deadline_days === 'number'){{ const d = new Date(); d.setDate(d.getDate() + ts.deadline_days); due = d.toISOString().slice(0,10); }}
+    const an = ts.title ? (ts.vorhaken === undefined ? true : !!ts.vorhaken) : false;
+    h += `<div class="mr-block"><h3>Aufgabe</h3>
+      ${{ts.frist ? `<p class="mr-grau">Erkannt: „${{_mrE(ts.satz || ts.frist)}}“</p>` : ''}}
+      <label class="mr-tgl"><input type="checkbox" id="mr-auf" ${{an ? 'checked' : ''}} onchange="document.getElementById('mr-auf-felder').hidden=!this.checked"> Aufgabe aus dieser Mail anlegen</label>
+      <div class="mr-auf-felder" id="mr-auf-felder" ${{an ? '' : 'hidden'}}>
+        <label>Was ist zu tun?<input id="mr-auf-titel" value="${{_mrE(ts.title || (aus ? 'Nachfassen: ' : 'Antworten: ') + (it.subject || ''))}}"></label>
+        <label>Fällig<input id="mr-auf-due" type="date" value="${{due}}"></label></div></div>`;
+  }}
+  const prim = bekannt ? `<button type="button" class="btn btn-primary" onclick="confirmMailReviewItem('${{it.id}}', this)">Übernehmen</button>`
+             : lead ? `<button type="button" class="btn btn-primary" onclick="mrLeadUebernehmen('${{it.id}}', this)">Lead anlegen und übernehmen</button>`
+             : nl ? `<button type="button" class="btn btn-primary" onclick="discardMailReviewItem('${{it.id}}', true)">Nicht ins CRM</button>`
+             : `<button type="button" class="btn btn-primary" onclick="openMailAssign('${{it.id}}')">Zuordnen / anlegen</button>`;
+  h += `<div class="mr-aktionen">
+      ${{nl ? '' : `<button type="button" class="btn btn-ghost" onclick="discardMailReviewItem('${{it.id}}')">Nicht ins CRM</button>`}}
+      <span class="mr-platz"></span>
+      ${{it.status === 'spaeter' ? '' : `<button type="button" class="btn btn-ghost" onclick="mrSpaeter('${{it.id}}')">Später</button>`}}
+      ${{prim}}</div>`;
+  if(!aus && !nl) h += `<div class="mr-ign">Künftig gar nicht mehr zeigen: <button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','adresse')">diesen Absender</button> · <button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','domain')">die ganze Domain</button></div>`;
+  h += '</div>';
+  box.innerHTML = h;
+  mrFirmenWahl();
+}}
+function _mrNaechste(id){{
+  const sicht = _mrListe.filter(it=>_mrGruppe(it) === _mrFilter && it.id !== id);
+  const i = _mrListe.findIndex(it=>it.id === id);
+  const danach = sicht.find(it=>_mrListe.indexOf(it) > i);
+  _mrSel = (danach || sicht[0] || {{}}).id || null;
+}}
+function _mrFehler(t, alt){{ let m = alt; try {{ m = JSON.parse(t).error || m; }} catch(e){{}} return m; }}
+function mrFirmenWahl(){{
+  const an = Array.from(document.querySelectorAll('.mr-firma-x')).filter(x=>x.checked).map(x=>x.dataset.firma);
+  document.querySelectorAll('.mr-anh-firma').forEach(sel=>{{
+    Array.from(sel.options).forEach((o,i)=>{{ o.disabled = i > 0 && !an.includes(o.value); }});
+    if(sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.selectedIndex = 0;
+  }});
+}}
+function _mrSammeln(id){{
+  const it = _mrItems[id] || {{}};
+  const q = (a, art) => document.querySelector(`input[data-mr="${{id}}"][data-anh="${{a.id}}"][data-art="${{art}}"]`);
+  const body = {{ anhaenge: (it.anhaenge||[]).map(a=>{{
+    const sel = document.querySelector(`.mr-anh-firma[data-anh="${{a.id}}"]`);
+    return {{ id: a.id, ablegen: !!(q(a,'ablegen')||{{}}).checked, acos: !!(q(a,'acos')||{{}}).checked, firma: sel ? sel.value : undefined }};
+  }}) }};
+  if(it.match && it.match.firma) body.firmen = [it.match.firma].concat(Array.from(document.querySelectorAll('.mr-firma-x')).filter(x=>x.checked).map(x=>x.dataset.firma));
+  const j = document.getElementById('mr-journal'); if(j) body.journal = j.checked;
+  const auf = document.getElementById('mr-auf');
+  if(auf){{
+    const titel = document.getElementById('mr-auf-titel').value.trim();
+    if(auf.checked && !titel){{ alert('Bitte einen Titel für die Aufgabe eingeben.'); return null; }}
+    body.aufgabe = auf.checked ? {{ title: titel, deadline: document.getElementById('mr-auf-due').value }} : null;
+  }}
+  return body;
+}}
+function mrLeadUebernehmen(id, btn){{
+  const it = _mrItems[id] || {{}};
+  const v = k => (document.getElementById(k).value || '').trim();
+  const lead = {{ firma: v('mr-l-firma'), name: v('mr-l-name'), email: v('mr-l-mail'), telefon: v('mr-l-tel'), quelle: (it.lead||{{}}).quelle || 'Mail' }};
+  if(!lead.firma){{ alert('Bitte den Namen des Unternehmens eintragen.'); document.getElementById('mr-l-firma').focus(); return; }}
+  const body = _mrSammeln(id); if(!body) return;
+  if(btn){{ btn.disabled = true; btn.textContent = 'Lege an…'; }}
+  mitDublettenCheck(x=>api('POST','/api/mail-review/'+id+'/assign', Object.assign({{}}, lead, x)))
+    .then(()=>api('POST', '/api/mail-review/'+id+'/confirm', body))
+    .then(()=>{{ _mrNaechste(id); loadMailReview(); }})
+    .catch(t=>{{ if(t) alert(_mrFehler(t, 'Konnte nicht angelegt werden.')); loadMailReview(); }});
+}}
+function confirmMailReviewItem(id, btn){{
+  const body = _mrSammeln(id); if(!body) return;
+  if(btn){{ btn.disabled = true; btn.textContent = 'Übernehme…'; }}
+  api('POST', '/api/mail-review/'+id+'/confirm', body).then(r=>{{
+    if(r && r.meldungen && r.meldungen.length) alert('Hinweise:\\n' + r.meldungen.join('\\n'));
+    _mrNaechste(id); loadMailReview();
+  }}).catch(t=>{{ alert(_mrFehler(t, 'Konnte nicht übernommen werden.')); loadMailReview(); }});
+}}
+function discardMailReviewItem(id, newsletter){{
+  const body = {{}};
+  const nl = document.getElementById('mr-nl-ignore');
+  if(newsletter && nl && nl.checked) body.ignorieren = 'adresse';
+  api('POST', '/api/mail-review/'+id+'/discard', body).then(()=>{{ _mrNaechste(id); loadMailReview(); }})
+    .catch(()=>alert('Konnte nicht gespeichert werden.'));
+}}
+function mrSpaeter(id){{
+  api('POST', '/api/mail-review/'+id+'/spaeter', {{}}).then(()=>{{ _mrNaechste(id); loadMailReview(); }})
+    .catch(t=>alert(_mrFehler(t, 'Konnte nicht zurückgestellt werden.')));
+}}
+function mrRueckgaengig(id){{
+  api('POST', '/api/mail-review/'+id+'/rueckgaengig', {{}}).then(r=>{{
+    if(r && r.meldungen && r.meldungen.length) alert(r.meldungen.join('\\n'));
+    _mrFilter = 'offen'; _mrSel = id; loadMailReview();
+  }}).catch(t=>alert(_mrFehler(t, 'Konnte nicht zurückgenommen werden.')));
+}}
 function _guessFirma(addr){{
   const d = ((addr||'').split('@')[1]||'').toLowerCase();
   const free = ['gmail.com','googlemail.com','gmx.de','gmx.net','web.de','t-online.de','outlook.com','hotmail.com','icloud.com','me.com','yahoo.com','yahoo.de','aol.com','freenet.de','posteo.de','mailbox.org'];
@@ -3757,7 +4717,7 @@ function ignoreMailReviewItem(id, scope){{
   const it = _mrItems[id] || {{}};
   const was = scope === 'domain' ? 'alle Mails der Domain ' + ((it.from||'').split('@')[1]||'') : 'alle Mails von ' + (it.from||'');
   if(!confirm(was + ' künftig ignorieren? Rückgängig machen geht später in den Einstellungen.')) return;
-  api('POST','/api/mail-review/'+id+'/ignore', {{scope}}).then(loadMailReview)
+  api('POST','/api/mail-review/'+id+'/ignore', {{scope}}).then(()=>{{ _mrNaechste(id); loadMailReview(); }})
     .catch(()=>alert('Konnte nicht ignoriert werden.'));
 }}
 function _mrGr(b){{ if(!b) return ''; return b < 1024*1024 ? Math.max(1, Math.round(b/1024)) + ' KB' : (b/1024/1024).toFixed(1).replace('.', ',') + ' MB'; }}
@@ -3766,29 +4726,6 @@ function mrAnhAblegen(cb){{
   const it = _mrItems[cb.dataset.mr] || {{}};
   if(acos){{ if(!cb.checked) acos.checked = false; acos.disabled = !cb.checked || !it.acos_verknuepft; }}
 }}
-function confirmMailReviewItem(id){{
-  const it = _mrItems[id] || {{}};
-  const body = {{ anhaenge: (it.anhaenge||[]).map(a=>{{
-    const q = art => document.querySelector(`input[data-mr="${{id}}"][data-anh="${{a.id}}"][data-art="${{art}}"]`);
-    return {{ id: a.id, ablegen: !!(q('ablegen')||{{}}).checked, acos: !!(q('acos')||{{}}).checked }};
-  }}) }};
-  const btn = event && event.target; if(btn){{ btn.disabled = true; btn.textContent = 'Übernehme…'; }}
-  api('POST', '/api/mail-review/'+id+'/confirm', body).then(r=>{{
-    if(r && r.abgelegt){{
-      let t = `${{r.abgelegt}} Anhang/Anhänge abgelegt in ${{r.ordner}}` + (r.acos ? `, ${{r.acos}} an ACOS gesendet` : '') + '.';
-      if(r.meldungen && r.meldungen.length) t += '\\n\\nHinweise:\\n' + r.meldungen.join('\\n');
-      alert(t);
-    }} else if(r && r.meldungen && r.meldungen.length) alert('Hinweise:\\n' + r.meldungen.join('\\n'));
-    loadMailReview();
-  }}).catch(t=>{{ let m = 'Konnte nicht übernommen werden.'; try {{ m = JSON.parse(t).error || m; }} catch(e){{}}
-    alert(m); loadMailReview(); }});
-}}
-function discardMailReviewItem(id){{
-  if(!confirm('Vorschlag verwerfen?')) return;
-  api('POST', '/api/mail-review/'+id+'/discard').then(loadMailReview)
-    .catch(()=>alert('Konnte nicht verworfen werden.'));
-}}
-
 // ── Panel navigation ──────────────────────────────────────────────────
 function showPanel(name, tab) {{
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
@@ -3886,9 +4823,20 @@ function logout() {{
 
 // ── TASK ──────────────────────────────────────────────────────────────
 let _taskData = {{}};
+function taskProjektWechsel() {{
+  const o = document.getElementById('t-projekt').selectedOptions[0];
+  if(o && o.value && o.dataset.firma) document.getElementById('t-firma').value = o.dataset.firma;
+}}
+function taskFirmaWechsel() {{
+  const fid = document.getElementById('t-firma').value, sel = document.getElementById('t-projekt');
+  Array.from(sel.options).forEach(o=>{{ if(o.value) o.hidden = !!fid && o.dataset.firma !== fid; }});
+  const cur = sel.selectedOptions[0];
+  if(cur && cur.value && fid && cur.dataset.firma !== fid) sel.value = '';
+}}
 function newTask() {{
   document.getElementById('task-modal-title').textContent='＋ Neue Aufgabe';
-  ['t-id','t-title','t-projekt','t-notes','t-deadline','t-value'].forEach(id=>document.getElementById(id).value='');
+  ['t-id','t-title','t-projekt','t-firma','t-notes','t-deadline','t-value'].forEach(id=>document.getElementById(id).value='');
+  taskFirmaWechsel();
   document.getElementById('t-prio').value='Mittel';
   document.getElementById('t-status').value='Offen';
   document.getElementById('t-category').value='Projektmanagement';
@@ -3905,6 +4853,8 @@ function editTask(id) {{
     document.getElementById('task-modal-title').textContent='✏️ Aufgabe: '+t.taskId;
     document.getElementById('t-id').value = t.taskId;
     document.getElementById('t-title').value = t.title||'';
+    document.getElementById('t-firma').value = t.firmaId||'';
+    taskFirmaWechsel();
     document.getElementById('t-projekt').value = t.projektId||'';
     document.getElementById('t-value').value = t.value||'';
     document.getElementById('t-category').value = t.category||'Projektmanagement';
@@ -3920,13 +4870,14 @@ function editTask(id) {{
 }}
 function saveTask() {{
   const id = document.getElementById('t-id').value;
-  if (!document.getElementById('t-projekt').value) {{
-    alert('Bitte ein Projekt wählen - Aufgaben hängen zwingend an einem Projekt.');
+  if (!document.getElementById('t-title').value.trim()) {{
+    alert('Bitte einen Titel eingeben.');
     return;
   }}
   const body = {{
     title:      document.getElementById('t-title').value,
     projekt_id:     document.getElementById('t-projekt').value,
+    firma_id:       document.getElementById('t-firma').value,
     category:       document.getElementById('t-category').value,
     priority:   document.getElementById('t-prio').value,
     status:     document.getElementById('t-status').value,
@@ -4130,9 +5081,11 @@ function saveContact() {{
 // ── OPPORTUNITY ───────────────────────────────────────────────────────
 function newOpp() {{
   document.getElementById('opp-modal-title').textContent='＋ Neue Opportunity';
-  ['o-id','o-title','o-contact','o-value','o-prob','o-deadline','o-action','o-summary'].forEach(id=>document.getElementById(id).value='');
+  ['o-id','o-title','o-contact','o-value','o-prob','o-deadline','o-action','o-summary','o-honorar','o-lex','o-vgrund','o-vnotiz'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('o-person').innerHTML='<option value="">– kein spez. Ansprechpartner –</option>';
-  document.getElementById('o-status').value='aktiv';
+  document.getElementById('o-status').value='anbahnung';
+  document.getElementById('o-hart').value='offen';
+  oppVerlustFelder();
   document.getElementById('o-delete-btn').style.display='none';
   document.getElementById('modal-opportunity').classList.add('open');
 }}
@@ -4146,12 +5099,18 @@ function editOpp(id) {{
     document.getElementById('o-contact').value = o.kontakt||'';
     updatePersonSelect('o-contact','o-person');
     setTimeout(()=>{{ document.getElementById('o-person').value = o.ansprechpartner||''; }}, 50);
-    document.getElementById('o-status').value = o.status||'aktiv';
+    document.getElementById('o-status').value = o.status||'anbahnung';
     document.getElementById('o-value').value = o.value||'';
     document.getElementById('o-prob').value = o.probability||'';
     document.getElementById('o-deadline').value = o.deadline||'';
     document.getElementById('o-action').value = o.next_action||'';
     document.getElementById('o-summary').value = o.summary||'';
+    document.getElementById('o-hart').value = o.honorarart||'offen';
+    document.getElementById('o-honorar').value = o.honorar||'';
+    document.getElementById('o-lex').value = o.lexware_ref||'';
+    document.getElementById('o-vgrund').value = o.verlustgrund||'';
+    document.getElementById('o-vnotiz').value = o.verlust_notiz||'';
+    oppVerlustFelder();
     document.getElementById('o-delete-btn').style.display='inline-flex';
     document.getElementById('modal-opportunity').classList.add('open');
   }});
@@ -4251,8 +5210,14 @@ function archiveOpp() {{
     .then(()=>{{ closeModal('opportunity'); reloadKeepPanel(); }})
     .catch(()=>flash('o-ok','o-err',false));
 }}
+function oppVerlustFelder() {{
+  const verl = document.getElementById('o-status').value === 'verloren';
+  document.querySelectorAll('#modal-opportunity .o-v').forEach(el=>{{ el.hidden = !verl; }});
+}}
 function saveOpp() {{
   const id = document.getElementById('o-id').value;
+  const verl = document.getElementById('o-status').value === 'verloren';
+  if (verl && !document.getElementById('o-vgrund').value) {{ alert('Bitte einen Verlustgrund wählen.'); return; }}
   const body = {{
     title:       document.getElementById('o-title').value,
     kontakt:         document.getElementById('o-contact').value,
@@ -4263,6 +5228,11 @@ function saveOpp() {{
     deadline:    document.getElementById('o-deadline').value,
     next_action: document.getElementById('o-action').value,
     summary:     document.getElementById('o-summary').value,
+    honorarart:  document.getElementById('o-hart').value,
+    honorar:     document.getElementById('o-honorar').value,
+    lexware_ref: document.getElementById('o-lex').value,
+    verlustgrund:  verl ? document.getElementById('o-vgrund').value : '',
+    verlust_notiz: verl ? document.getElementById('o-vnotiz').value : '',
   }};
   const method = id ? 'PUT' : 'POST';
   const path   = id ? '/api/opportunities/'+encodeURIComponent(id) : '/api/opportunities';
@@ -4516,6 +5486,225 @@ def wissen_datei(doc_id):
         return row["name"], daten, sicher[endung], "inline"
     return row["name"], daten, "application/octet-stream", "attachment"
 
+# ── RECHERCHE UEBER ALLE BEREICHE (Umbau Schritt 13, 2026-10-31) ─────────────
+# Freitext oder Stichworte; mehrere Begriffe werden kombiniert (alle muessen passen),
+# "in Anfuehrungszeichen" sucht die genaue Wortfolge. Dokumente ueber die
+# deutsche Volltextsuche (inkl. OCR). Alles bleibt im CRM.
+RECHERCHE_BEREICHE = ("unternehmen", "kontakt", "projekt", "aufgabe", "journal", "mail", "fachwissen", "kundendokument")
+_R_JE_BEREICH = 6
+_R_MAX = 60
+
+def _r_terme(q):
+    return [a or b for a, b in re.findall(r'"([^"]+)"|(\S+)', q or "") if (a or b).strip()][:8]
+
+def _r_wortanfang(t):
+    """Postgres-Regex: Begriff am Wortanfang (\\m), damit "Lea" nicht in "Lead" trifft."""
+    return "\\m" + re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", t)
+
+def _r_like(spalten, terme):
+    """SQL-Bedingung: jeder Begriff beginnt ein Wort in einer der Spalten."""
+    if not terme:
+        return "TRUE", []
+    feld = "concat_ws(' ', " + ", ".join(spalten) + ")"
+    return " AND ".join(f"{feld} ~* %s" for _ in terme), [_r_wortanfang(t) for t in terme]
+
+def _r_doc(tsv, spalten, terme):
+    """Dokumente: jeder Begriff im Volltext (deutsche Grundform) oder am Wortanfang in Name, Pfad, Firma."""
+    if not terme:
+        return "TRUE", []
+    feld = "concat_ws(' ', " + ", ".join(spalten) + ")"
+    teile, args = [], []
+    for t in terme:
+        einfach = re.fullmatch(r"\w+", t)
+        if einfach:   # Praefix auf die Grundform: "Liquidität" findet auch "Liquiditätsplanung"
+            teile.append(f"({tsv} @@ to_tsquery('german', %s) OR {feld} ~* %s)")
+            args += [t + ":*", _r_wortanfang(t)]
+        else:
+            teile.append(f"({tsv} @@ phraseto_tsquery('german', %s) OR {feld} ~* %s)")
+            args += [t, _r_wortanfang(t)]
+    return " AND ".join(teile), args
+
+def _r_auszug(text, terme, laenge=180):
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return ""
+    pos = -1
+    for t in terme:
+        pos = text.lower().find(t.lower())
+        if pos >= 0:
+            break
+    start = max(0, pos - laenge // 3) if pos > laenge // 2 else 0
+    stueck = ("… " if start else "") + text[start:start + laenge] + (" …" if len(text) > start + laenge else "")
+    for t in sorted(terme, key=len, reverse=True):
+        stueck = re.sub(r"(?<!\w)(" + re.escape(t) + ")", "⟦\\1⟧", stueck, flags=re.I)
+    return stueck
+
+def _r_zeit(spalte, zeitraum):
+    if zeitraum == "30":
+        return f" AND {spalte} >= current_date - 30"
+    if zeitraum == "jahr":
+        return f" AND {spalte} >= date_trunc('year', current_date)"
+    return ""
+
+def _r_dm(d):
+    return d.strftime("%d.%m.%Y") if d else ""
+
+def recherche(params):
+    def p(k):
+        v = params.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        return (v or "").strip()
+    q = p("q")[:200]
+    bereich = p("bereich") if p("bereich") in RECHERCHE_BEREICHE else "alle"
+    zeitraum = p("zeitraum") if p("zeitraum") in ("30", "jahr") else ""
+    try:
+        firma_id = int(p("firma_id")) if p("firma_id") else None
+    except ValueError:
+        firma_id = None
+    terme = _r_terme(q)
+    if not terme and not firma_id:
+        return {"q": q, "zahlen": {b: 0 for b in RECHERCHE_BEREICHE}, "items": [], "gesamt": 0, "leer": True}
+    tsq = q if terme else ""
+    limit = _R_MAX if bereich != "alle" else _R_JE_BEREICH
+    fsql = lambda spalte: (f" AND {spalte} = %s", [firma_id]) if firma_id else ("", [])
+
+    abfragen = {}
+    # Unternehmen
+    w, a = _r_like(["f.name", "f.branch", "f.address", "f.next_action", "f.funktion", "f.beziehung_notiz", "f.source"], terme)
+    fs, fa = fsql("f.id")
+    abfragen["unternehmen"] = (f"""SELECT f.id, f.name, f.art, f.status, f.branch, f.address, f.next_action, f.funktion
+        FROM firmen f WHERE f.archiviert_am IS NULL AND {w}{fs} ORDER BY f.name""", a + fa)
+    # Kontakte
+    w, a = _r_like(["pe.name", "pe.titel", "pe.abteilung", "pe.email", "pe.email2", "pe.telefon", "pe.mobil", "f.name"], terme)
+    fs, fa = fsql("pe.firma_id")
+    abfragen["kontakt"] = (f"""SELECT pe.id, pe.name, pe.titel, pe.email, pe.telefon, pe.mobil, f.name AS firma, f.id AS fid
+        FROM personen pe LEFT JOIN firmen f ON f.id=pe.firma_id
+        WHERE pe.archiviert_am IS NULL AND pe.zusammengefuehrt_in IS NULL AND {w}{fs} ORDER BY pe.name""", a + fa)
+    # Projekte
+    w, a = _r_like(["p.name", "p.beschreibung", "p.next_action", "f.name"] + (["p.honorar", "p.lexware_ref"] if _spalte_da("projekte", "honorar") else []), terme)
+    fs, fa = fsql("p.firma_id")
+    abfragen["projekt"] = (f"""SELECT p.id, p.name, p.status, p.value, p.beschreibung, p.next_action, f.name AS firma, f.id AS fid, p.updated_at
+        FROM projekte p LEFT JOIN firmen f ON f.id=p.firma_id WHERE p.archiviert_am IS NULL AND {w}{fs}{_r_zeit('p.updated_at', zeitraum)}
+        ORDER BY p.updated_at DESC""", a + fa)
+    # Aufgaben
+    w, a = _r_like(["t.title", "t.description", "t.notes", "f.name", "pr.name"], terme)
+    fs, fa = fsql("COALESCE(t.firma_id, pr.firma_id)")
+    abfragen["aufgabe"] = (f"""SELECT t.task_id, t.title, t.status, t.deadline, t.description, f.name AS firma, pr.name AS projekt, t.created_at
+        FROM tasks t LEFT JOIN projekte pr ON pr.id=t.projekt_id LEFT JOIN firmen f ON f.id=COALESCE(t.firma_id, pr.firma_id)
+        WHERE t.archiviert_am IS NULL AND {w}{fs}{_r_zeit('t.created_at', zeitraum)}
+        ORDER BY (t.status='Erledigt'), t.deadline NULLS LAST, t.created_at DESC""", a + fa)
+    # Journal (ohne Mails)
+    w, a = _r_like(["ak.notiz", "ak.titel", "f.name", "pe.name"], terme)
+    fs, fa = fsql("ak.firma_id")
+    abfragen["journal"] = (f"""SELECT ak.id, ak.art, ak.titel, ak.notiz, ak.datum, f.name AS firma, pe.name AS person
+        FROM aktivitaeten ak LEFT JOIN firmen f ON f.id=ak.firma_id LEFT JOIN personen pe ON pe.id=ak.person_id
+        WHERE coalesce(ak.art,'') <> 'email' AND {w}{fs}{_r_zeit('ak.datum', zeitraum)} ORDER BY ak.datum DESC, ak.id DESC""", a + fa)
+    # Mails: uebernommene (Journal "E-Mail") und offene im Review
+    w, a = _r_like(["ak.notiz", "ak.titel", "f.name", "pe.name"], terme)
+    w2, a2 = _r_like(["q.betreff", "q.body_excerpt", "q.von", "q.von_name", "q.an", "q.match->>'firma'"], terme)
+    fs, fa = fsql("ak.firma_id")
+    fs2 = " AND lower(q.match->>'firma') = (SELECT lower(name) FROM firmen WHERE id=%s)" if firma_id else ""
+    abfragen["mail"] = (f"""SELECT * FROM (
+          SELECT 'journal' AS quelle, ak.id::text AS id, ak.notiz AS text, ak.titel AS betreff, ak.datum, f.name AS firma, pe.name AS person
+          FROM aktivitaeten ak LEFT JOIN firmen f ON f.id=ak.firma_id LEFT JOIN personen pe ON pe.id=ak.person_id
+          WHERE ak.art='email' AND {w}{fs}{_r_zeit('ak.datum', zeitraum)}
+          UNION ALL
+          SELECT 'review', q.id, q.body_excerpt, q.betreff, q.datum, q.match->>'firma', coalesce(q.von_name, q.von)
+          FROM mail_review_queue q WHERE q.status IN ('pending','spaeter') AND {w2}{fs2}{_r_zeit('q.datum', zeitraum)}
+        ) x ORDER BY datum DESC NULLS LAST""", a + fa + a2 + ([firma_id] if firma_id else []))
+    # Fachwissen (DK-Wissen), nur ohne Unternehmensfilter
+    if tsq and not firma_id:
+        abfragen["fachwissen"] = (f"""SELECT id, name, pfad, geaendert_am,
+              ts_headline('german', left(inhalt, 60000), websearch_to_tsquery('german', %s),
+                'StartSel=⟦, StopSel=⟧, MaxFragments=1, MaxWords=26, MinWords=10') AS auszug
+            FROM wissen_dokumente WHERE {_r_doc('suchtext', ['name', 'pfad'], terme)[0]}
+              {_r_zeit('geaendert_am', zeitraum)}
+            ORDER BY ts_rank(suchtext, websearch_to_tsquery('german', %s)) DESC, geaendert_am DESC NULLS LAST""",
+            [tsq] + _r_doc('suchtext', ['name', 'pfad'], terme)[1] + [tsq])
+    # Kundendokumente: Inhalte (ACOS, Besprechungen) und Dateinamen aller Kundenordner
+    fs, fa = fsql("k.firma_id")
+    if tsq:
+        kw_bed, kw_arg = _r_doc("k.suchtext", ["k.name", "k.pfad", "f.name"], terme)
+        kw_aus = (
+            "ts_headline('german', left(k.inhalt, 60000), websearch_to_tsquery('german', %s), 'StartSel=⟦, StopSel=⟧, MaxFragments=1, MaxWords=26, MinWords=10')")
+        kw_aus_arg = [tsq]
+    else:
+        kw_bed, kw_arg, kw_aus, kw_aus_arg = "TRUE", [], "left(k.inhalt, 200)", []
+    teil_ablage, ablage_arg = "", []
+    if _tabelle_da("ablage_datei"):
+        w3, a3 = _r_like(["ad.pfad"], terme)
+        fs3, fa3 = fsql("ad.firma_id")
+        teil_ablage = f"""UNION ALL
+          SELECT 'datei', ad.datei_id, f.name, ad.pfad, split_part(ad.pfad, '/', -1), '', ad.geaendert_am::date, NULL
+          FROM ablage_datei ad JOIN firmen f ON f.id=ad.firma_id
+          WHERE NOT ad.entfernt AND {w3}{fs3}{_r_zeit('ad.geaendert_am', zeitraum)}
+            AND NOT EXISTS (SELECT 1 FROM kundenwissen kk WHERE kk.pfad = ad.pfad)"""
+        ablage_arg = a3 + fa3
+    if _tabelle_da("kundenwissen"):
+        abfragen["kundendokument"] = (f"""SELECT * FROM (
+              SELECT 'inhalt' AS art, k.id::text AS id, f.name AS firma, k.pfad, coalesce(nullif(k.titel,''), k.name) AS titel,
+                     {kw_aus} AS auszug, coalesce(k.datum, k.geaendert_am::date) AS datum, k.quelle
+              FROM kundenwissen k JOIN firmen f ON f.id=k.firma_id WHERE {kw_bed}{fs}{_r_zeit('coalesce(k.datum, k.geaendert_am::date)', zeitraum)}
+              {teil_ablage}
+            ) x ORDER BY datum DESC NULLS LAST""", kw_aus_arg + kw_arg + fa + ablage_arg)
+
+    zahlen, items = {}, []
+    for b in RECHERCHE_BEREICHE:
+        if b not in abfragen:
+            zahlen[b] = 0
+            continue
+        sql, args = abfragen[b]
+        zahlen[b] = _q1(f"SELECT count(*) AS n FROM ({sql}) z", args)["n"]
+        if bereich not in ("alle", b) or not zahlen[b]:
+            continue
+        for r in _q(f"{sql} LIMIT %s", args + [limit]):
+            t = _r_treffer(b, r, terme)
+            for w in sorted(terme, key=len, reverse=True):
+                t["titel"] = re.sub(r"(?<![\w⟦])(" + re.escape(w) + ")", "⟦\\1⟧", t["titel"] or "", flags=re.I)
+            items.append(t)
+    return {"q": q, "zahlen": zahlen, "items": items, "gesamt": sum(zahlen.values()), "leer": False,
+            "nur_firma": not terme}
+
+def _r_treffer(b, r, terme):
+    A = lambda typ, ident: {"typ": typ, "id": str(ident)}
+    if b == "unternehmen":
+        text = " · ".join(x for x in (ARTEN.get(r["art"], "") if r.get("art") else "", ", ".join(x.strip().capitalize() for x in (r["status"] or "").split(",") if x.strip()),
+                                      r["branch"], r["address"], r["funktion"]) if x)
+        if r["next_action"]:
+            text += f" · Nächster Schritt: {r['next_action']}"
+        return {"bereich": b, "titel": r["name"], "text": _r_auszug(text, terme), "ort": "Stammdaten", "datum": "", "aktion": A("firma", r["id"])}
+    if b == "kontakt":
+        text = " · ".join(x for x in (r["titel"], r["email"], r["telefon"] or r["mobil"]) if x)
+        return {"bereich": b, "titel": r["name"], "text": _r_auszug(text, terme), "ort": r["firma"] or "", "datum": "", "aktion": A("person", r["id"])}
+    if b == "projekt":
+        text = PROJEKT_PHASEN.get(_phase(r["status"]), "") + (f" · {_fmt_money(r['value'])}" if r["value"] else "") + \
+               (f" · {r['beschreibung']}" if r["beschreibung"] and r["beschreibung"] != r["name"] else "")
+        return {"bereich": b, "titel": r["name"], "text": _r_auszug(text, terme), "ort": r["firma"] or "", "datum": "", "aktion": A("projekt", r["id"])}
+    if b == "aufgabe":
+        text = (r["status"] or "") + (f" · fällig {_r_dm(r['deadline'])}" if r["deadline"] else "") + \
+               (f" · {r['description']}" if r["description"] and r["description"] != r["title"] else "")
+        return {"bereich": b, "titel": r["title"], "text": _r_auszug(text, terme),
+                "ort": " · ".join(x for x in (r["firma"], r["projekt"]) if x), "datum": "", "aktion": A("aufgabe", r["task_id"])}
+    if b == "journal":
+        return {"bereich": b, "titel": JOURNAL_ARTEN.get(r["art"] or "", r["art"] or "Eintrag"), "text": _r_auszug(r["notiz"], terme),
+                "ort": " · ".join(x for x in (r["firma"], r["person"]) if x), "datum": _r_dm(r["datum"]), "aktion": A("journal", r["id"])}
+    if b == "mail":
+        offen = r["quelle"] == "review"
+        titel = (r["betreff"] or re.sub(r"^\W*\s*Mail(?: gesendet)?:\s*", "", (r["text"] or "").split(" — ")[0]))[:120]
+        return {"bereich": b, "titel": titel or "(ohne Betreff)", "text": ("Offen im Mail-Review · " if offen else "") + _r_auszug(r["text"], terme),
+                "ort": " · ".join(x for x in (r["firma"], r["person"]) if x), "datum": _r_dm(r["datum"]),
+                "aktion": A("mailreview" if offen else "journal", r["id"])}
+    if b == "fachwissen":
+        return {"bereich": b, "titel": r["name"], "text": re.sub(r"\s+", " ", r["auszug"] or "").strip(), "ort": "DK-Wissen · " + (r["pfad"].rsplit("/", 1)[0] if "/" in r["pfad"] else ""),
+                "datum": _r_dm(r["geaendert_am"]), "aktion": A("wissen", r["id"])}
+    # Kundendokument
+    ort = f"{r['firma']} · " + (KW_QUELLEN.get(r["quelle"], "") if r["art"] == "inhalt" else "Kundenordner")
+    text = re.sub(r"\s+", " ", r["auszug"] or "").strip() if r["art"] == "inhalt" else _r_auszug(r["pfad"], terme)
+    return {"bereich": b, "titel": r["titel"], "text": text, "ort": ort, "datum": _r_dm(r["datum"]),
+            "aktion": A("kundenwissen", r["id"]) if r["art"] == "inhalt" else
+                      {"typ": "link", "id": _nextcloud_ordner_link(f"{kunden_ablage_basis()}/{r['pfad'].rsplit('/', 1)[0]}")}}
+
 def wissen_abgleich_starten(username):
     import subprocess
     skript = BASE_DIR / "wissen_sync.py"
@@ -4656,8 +5845,8 @@ nav button.on{color:var(--accent);font-weight:600}
 </nav>
 <script>
 const D = __DATA__;
-const ST = { lead:'Angebahnt', aktiv:'Aktiv', pausiert:'Pausiert', won:'Gewonnen', lost:'Verloren', inaktiv:'Inaktiv' };
-const STF = { lead:'', aktiv:'b-gruen', pausiert:'b-gelb', won:'b-gruen', lost:'b-grau', inaktiv:'b-grau' };
+const ST = { anbahnung:'Anbahnung', angebot:'Angebot raus', laeuft:'Läuft', abgeschlossen:'Abgeschlossen', verloren:'Verloren' };
+const STF = { anbahnung:'b-gelb', angebot:'', laeuft:'b-gruen', abgeschlossen:'b-grau', verloren:'b-grau' };
 const e = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const dt = iso => { if(!iso) return ''; const [y,m,d]=iso.slice(0,10).split('-'); return `${d}.${m}.${y}`; };
 const tel = n => String(n||'').replace(/[^\d+]/g,'');
@@ -4698,11 +5887,11 @@ document.getElementById('v-aufgaben').innerHTML = `<input class="search" type="s
 renderAufgaben('');
 
 // Projekte
-let PSEL = new Set(D.projekt_status && D.projekt_status.length ? D.projekt_status : ['lead','aktiv','pausiert']);
+let PSEL = new Set(D.projekt_status && D.projekt_status.length ? D.projekt_status : ['anbahnung','angebot','laeuft']);
 function renderProjekte(){
   const zahl = s => D.projekte.filter(p=>p.status===s).length;
   let h = '<div class="chips">' + Object.keys(ST).filter(s=>zahl(s)).map(s=>`<button class="chip ${PSEL.has(s)?'on':''}" onclick="togP('${s}')">${ST[s]} ${zahl(s)}</button>`).join('') + '</div>';
-  const order = ['aktiv','lead','pausiert','won','lost','inaktiv'];
+  const order = ['laeuft','angebot','anbahnung','abgeschlossen','verloren'];
   let any = false;
   for(const s of order){
     if(!PSEL.has(s)) continue;
@@ -4788,7 +5977,7 @@ def default_projekt_for_firma(firma):
         if row:
             return row["id"]
         r = _x(
-            "INSERT INTO projekte (name, firma_id, status) VALUES (%s,%s,'aktiv') RETURNING id",
+            "INSERT INTO projekte (name, firma_id, status) VALUES (%s,%s,'laeuft') RETURNING id",
             (f"{firma} – laufende Betreuung", firma_id),
         )[0]
         _audit("projekte", r["id"], "insert", neu={"name": f"{firma} – laufende Betreuung", "firma_id": firma_id})
@@ -4799,7 +5988,7 @@ def default_projekt_for_firma(firma):
     if row:
         return row["id"]
     r = _x(
-        "INSERT INTO projekte (name, firma_id, status) VALUES ('Intern – laufende Aufgaben',%s,'aktiv') RETURNING id",
+        "INSERT INTO projekte (name, firma_id, status) VALUES ('Intern – laufende Aufgaben',%s,'laeuft') RETURNING id",
         (intern_id,),
     )[0]
     _audit("projekte", r["id"], "insert", neu={"name": "Intern – laufende Aufgaben", "firma_id": intern_id})
@@ -4811,18 +6000,41 @@ def _next_task_id():
     nums = [int(re.search(r"\d+", r["task_id"]).group()) for r in rows] or [0]
     return f"PROJ-{max(nums)+1:03d}"
 
+HERKUNFT = {"manuell": "von Hand", "mail": "aus Mail", "termin": "aus Termin", "journal": "aus dem Journal", "heute": "aus Heute"}
+
+def _aufgabe_zuordnung(body):
+    """Projekt und Unternehmen einer Aufgabe bestimmen (Umbau Schritt 5).
+    Projekt optional; ohne Projekt haengt sie direkt am Unternehmen, ohne
+    beides ist es eine eigene Aufgabe. Ein Projekt gibt das Unternehmen vor."""
+    pid = body.get("projekt_id") or body.get("projektId") or None
+    fid = body.get("firma_id") or None
+    if pid:
+        pr = _q1("SELECT id, firma_id FROM projekte WHERE id=%s", (int(pid),))
+        if not pr:
+            raise ValueError("Projekt nicht gefunden")
+        return pr["id"], pr["firma_id"]
+    if fid:
+        if not _q1("SELECT 1 FROM firmen WHERE id=%s", (int(fid),)):
+            raise ValueError("Unternehmen nicht gefunden")
+        return None, int(fid)
+    name = (body.get("firma") or "").strip()
+    return None, (_resolve_firma_id(name, create_if_missing=True) if name else None)
+
 def create_task(body):
-    projekt_id = body.get("projekt_id") or body.get("projektId")
-    if not projekt_id:
-        raise ValueError("projekt_id fehlt - Aufgaben brauchen zwingend ein Projekt")
+    projekt_id, firma_id = _aufgabe_zuordnung(body)
+    if not (body.get("title") or "").strip():
+        raise ValueError("Bitte einen Titel eingeben")
+    herkunft = body.get("herkunft") or ("mail" if body.get("quelle_mail_id") else "manuell")
+    if herkunft not in HERKUNFT:
+        herkunft = "manuell"
     new_id = _next_task_id()
     row = _x("""
-        INSERT INTO tasks (task_id, projekt_id, title, description, category, priority,
+        INSERT INTO tasks (task_id, projekt_id, firma_id, herkunft, title, description, category, priority,
                             status, value, deadline, assigned_to, notes, quelle_mail_id)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """, (
-        new_id, int(projekt_id), body.get("title", ""),
+        new_id, projekt_id, firma_id, herkunft, body.get("title", ""),
         body.get("notes", "") or body.get("title", ""),
         body.get("category", "Projektmanagement"), body.get("priority", "Mittel"),
         body.get("status", "Offen"), _parse_money(body.get("value")),
@@ -4856,9 +6068,13 @@ def update_task(task_id, body):
         sets.append("deadline=%s"); params.append(body["deadline"] or None)
     if "value" in body:
         sets.append("value=%s"); params.append(_parse_money(body["value"]))
-    pid = body.get("projekt_id") or body.get("projektId")
-    if pid:
-        sets.append("projekt_id=%s"); params.append(int(pid))
+    if any(k in body for k in ("projekt_id", "projektId", "firma_id")):
+        b = dict(body)
+        if "firma_id" not in b and not (b.get("projekt_id") or b.get("projektId")):
+            b["firma_id"] = row.get("firma_id")   # Projekt entfernt, Unternehmen bleibt
+        projekt_id, firma_id = _aufgabe_zuordnung(b)
+        sets.append("projekt_id=%s"); params.append(projekt_id)
+        sets.append("firma_id=%s"); params.append(firma_id)
     if not sets:
         return
     sets.append("updated_at=now()")
@@ -4899,6 +6115,9 @@ def create_contact(body):
         ))[0]
         firma_id = r["id"]
         _audit("firmen", firma_id, "insert", neu=body)
+        extra = {k: body[k] for k in ("art", "funktion") if body.get(k)}
+        if extra:
+            update_contact(firma_id, extra)
     else:
         firma_id = firma_row["id"]
 
@@ -4953,6 +6172,13 @@ def update_contact(contact_id, body):
             sets.append(f"{col}=%s"); params.append(val)
     if "acos_fuehren" in body:
         sets.append("acos_fuehren=%s"); params.append(bool(body["acos_fuehren"]))
+    if "art" in body and _spalte_da("firmen", "art"):
+        a = (body.get("art") or "").strip().lower()
+        if a not in ARTEN:
+            raise ValueError(f"Unbekannte Beziehung: {a}")
+        sets.append("art=%s"); params.append(a)
+    if "funktion" in body and _spalte_da("firmen", "funktion"):
+        sets.append("funktion=%s"); params.append((body.get("funktion") or "").strip() or None)
     if body.get("firma"):
         sets.append("name=%s"); params.append(body["firma"])
     if not sets:
@@ -4986,7 +6212,7 @@ def load_firma_akte(firma_id):
         "last_contact": _d(p["last_contact"]),
     } for p in _q("SELECT * FROM personen WHERE firma_id=%s AND archiviert_am IS NULL ORDER BY id", (f["id"],))]
     projekte = [_projekt_row(r) for r in _q(PROJEKT_SELECT + " WHERE p.firma_id=%s AND p.archiviert_am IS NULL ORDER BY p.created_at", (f["id"],))]
-    aufgaben = [_task_row(r) for r in _q(TASK_SELECT + """ WHERE p.firma_id=%s AND t.archiviert_am IS NULL AND p.archiviert_am IS NULL
+    aufgaben = [_task_row(r) for r in _q(TASK_SELECT + """ WHERE COALESCE(t.firma_id, p.firma_id)=%s AND t.archiviert_am IS NULL AND p.archiviert_am IS NULL
                                            ORDER BY (t.status='Erledigt'), t.deadline NULLS LAST, t.created_at""", (f["id"],))]
     journal = load_journal({"firma": f["name"], "anzahl": "30"})
     heute = date.today()
@@ -4998,6 +6224,9 @@ def load_firma_akte(firma_id):
         "source": f["source"] or "", "last_contact": _d(f["last_contact"]), "next_action": f["next_action"] or "",
         "kundennr": f.get("kundennr"), "created": _d(f["created_at"]),
         "acos_fuehren": bool(f.get("acos_fuehren")), "archiviert": f["archiviert_am"] is not None,
+        "art": _art(f), "funktion": f.get("funktion") or "", "arten": ARTEN,
+        "beteiligte": load_beteiligte(f["id"], _art(f)) if _spalte_da("firmen", "art") else {"verfuegbar": False},
+        "vertraege": load_vertraege(f["id"], _art(f)),
         "personen": personen, "projekte": projekte, "aufgaben": aufgaben,
         "journal": journal["items"], "journal_total": journal["total"],
         "journal_arten": {k: JOURNAL_ARTEN[k] for k in JOURNAL_ARTEN_MANUELL},
@@ -5038,8 +6267,7 @@ def load_projekt_akte(projekt_id):
                 archiviert=r["archiviert_am"] is not None, aufgaben=aufgaben, personen=personen,
                 journal=journal["items"], journal_total=journal["total"],
                 journal_arten={k: JOURNAL_ARTEN[k] for k in JOURNAL_ARTEN_MANUELL},
-                status_optionen={"lead": "Angebahnt", "aktiv": "Aktiv", "pausiert": "Pausiert", "won": "Gewonnen",
-                                 "lost": "Verloren", "inaktiv": "Inaktiv"})
+                status_optionen=PROJEKT_PHASEN, honorararten=HONORARARTEN, verlustgruende=VERLUSTGRUENDE)
 
 def akte_aufgabe(firma_id, body):
     """Neue Aufgabe aus der Akte; ohne Projekt landet sie im Sammelprojekt der Firma."""
@@ -5049,13 +6277,10 @@ def akte_aufgabe(firma_id, body):
     titel = (body.get("title") or "").strip()
     if not titel:
         raise ValueError("Bitte einen Titel eingeben")
-    pid = body.get("projekt_id")
-    if pid:
-        if not _q1("SELECT 1 FROM projekte WHERE id=%s AND firma_id=%s", (int(pid), f["id"])):
-            raise ValueError("Projekt gehört nicht zu diesem Unternehmen")
-    else:
-        pid = default_projekt_for_firma(f["name"])
-    create_task({"title": titel, "projekt_id": pid, "deadline": body.get("deadline") or None,
+    pid = body.get("projekt_id") or None
+    if pid and not _q1("SELECT 1 FROM projekte WHERE id=%s AND firma_id=%s", (int(pid), f["id"])):
+        raise ValueError("Projekt gehört nicht zu diesem Unternehmen")
+    create_task({"title": titel, "projekt_id": pid, "firma_id": f["id"], "deadline": body.get("deadline") or None,
                  "priority": body.get("priority") or "Mittel"})
     return load_firma_akte(f["id"])
 
@@ -5211,11 +6436,14 @@ def create_opp(body):
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """, (
-        title, firma_id, person_id, body.get("status", "aktiv") or "aktiv",
+        title, firma_id, person_id, _phase(body.get("status")),
         _parse_money(body.get("value")), _parse_percent(body.get("probability")),
         body.get("next_action", ""), body.get("deadline") or None,
         body.get("summary", title),
     ))[0]
+    extra = _projekt_extra(body)
+    if extra:
+        _x(f"UPDATE projekte SET {', '.join(k + '=%s' for k in extra)} WHERE id=%s", list(extra.values()) + [row["id"]])
     _audit("projekte", row["id"], "insert", neu=body)
     return row["id"]
 
@@ -5227,7 +6455,7 @@ def update_opp(opp_id, body):
     if body.get("title"):
         sets.append("name=%s"); params.append(body["title"])
     if "status" in body:
-        sets.append("status=%s"); params.append(body["status"])
+        sets.append("status=%s"); params.append(_phase(body["status"]))
     if "value" in body:
         sets.append("value=%s"); params.append(_parse_money(body["value"]))
     if "probability" in body:
@@ -5242,6 +6470,8 @@ def update_opp(opp_id, body):
         sets.append("firma_id=%s"); params.append(_resolve_firma_id(body["kontakt"]))
     if "ansprechpartner" in body:
         sets.append("person_id=%s"); params.append(_resolve_person_id(body["ansprechpartner"], row["firma_id"]))
+    for k, w in _projekt_extra(body).items():
+        sets.append(k + "=%s"); params.append(w)
     if not sets:
         return
     sets.append("updated_at=now()")
@@ -5322,8 +6552,8 @@ def load_archive():
     aufgaben = _q("""SELECT t.task_id, t.title, t.status, t.completed_at, p.name AS projekt_name,
                             f.name AS firma_name, p.archiviert_am IS NOT NULL AS projekt_archiviert,
                             t.archiviert_am
-                     FROM tasks t JOIN projekte p ON p.id = t.projekt_id
-                     LEFT JOIN firmen f ON f.id = p.firma_id
+                     FROM tasks t LEFT JOIN projekte p ON p.id = t.projekt_id
+                     LEFT JOIN firmen f ON f.id = COALESCE(t.firma_id, p.firma_id)
                      WHERE t.archiviert_am IS NOT NULL ORDER BY t.archiviert_am DESC""")
     return {
         "firmen": [{"id": str(r["id"]), "name": r["name"], "status": r["status"] or "",
@@ -5427,7 +6657,7 @@ JOURNAL_ARTEN = {
     "kontakt": "Kontakt", "telefonat": "Telefonat", "meeting": "Termin",
     "email": "E-Mail", "notiz": "Notiz", "pipeline": "Projekt",
     "kampagne": "Kampagne", "sichtbarkeit-monitoring": "Sichtbarkeit (ACOS)",
-    "acos": "ACOS",
+    "acos": "ACOS", "dokument": "Dokument",
 }
 JOURNAL_ARTEN_MANUELL = ("kontakt", "telefonat", "meeting", "email", "notiz")
 
@@ -5620,10 +6850,11 @@ def journal_aktion(entry_id, body):
             raise ValueError("Titel fehlt")
         projekt_name = (body.get("projekt") or "").strip()
         projekt_id = (_projekt_in_firma(row["firma_id"], projekt_name) if projekt_name
-                      else row["projekt_id"] or default_projekt_for_firma(row["firma_name"]))
+                      else row["projekt_id"])
         label = JOURNAL_ARTEN.get(row["art"], row["art"])
         task_id = create_task({
-            "title": titel, "projekt_id": projekt_id, "deadline": body.get("deadline") or "",
+            "title": titel, "projekt_id": projekt_id, "firma_id": row["firma_id"], "herkunft": "journal",
+            "deadline": body.get("deadline") or "",
             "priority": body.get("priority") or "Mittel", "status": "Offen", "category": "Follow-up",
             "notes": f"Aus dem Journal ({_d(row['datum'])}, {label}): {row['notiz'] or ''}",
         })
@@ -5980,6 +7211,11 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {{
 
 
 # ── KONTAKT-ZUORDNUNG FUER EINGEHENDE MAILS (Konzept 1.4) ───────────────────
+FREEMAIL_DOMAINS = {"gmail.com", "googlemail.com", "gmx.de", "gmx.net", "gmx.at", "gmx.ch", "web.de", "t-online.de",
+                    "outlook.com", "outlook.de", "hotmail.com", "hotmail.de", "live.de", "live.com", "icloud.com", "me.com",
+                    "mac.com", "yahoo.com", "yahoo.de", "aol.com", "aol.de", "freenet.de", "posteo.de", "mailbox.org",
+                    "arcor.de", "online.de", "vodafone.de", "email.de", "proton.me", "protonmail.com"}
+
 def match_contact_for_email(sender_email):
     """Ordnet eine Absenderadresse einem bestehenden Kontakt zu. Reihenfolge
     bewusst konservativ (Konzept 1.4):
@@ -6008,6 +7244,9 @@ def match_contact_for_email(sender_email):
                 }
 
     # 2) Domain-Treffer ueber eine andere Person derselben Firma
+    #    (nicht bei Freemail-Adressen, sonst landet jede GMX-Mail bei irgendeiner Firma)
+    if domain in FREEMAIL_DOMAINS:
+        return None
     for c in contacts:
         for p in c.get("ansprechpartner_list", []):
             p_email = (p.get("email") or "").strip().lower()
@@ -6019,6 +7258,207 @@ def match_contact_for_email(sender_email):
                 }
 
     # 3) kein Treffer
+    return None
+
+
+# ── MAIL-ERKENNUNG (Umbau Schritt 10, Migration 021, 2026-10-31) ─────────────
+# Regelbasiert, ohne KI und ohne externe Dienste: Fristen -> Aufgabenvorschlag,
+# Terminbuchung ueber Zeeg -> Lead, weitere Unternehmen -> Aufteilen.
+# Es wird nur vorgeschlagen; uebernommen wird erst auf Ronalds Klick.
+_WOCHENTAGE = {"montag": 0, "dienstag": 1, "mittwoch": 2, "donnerstag": 3, "freitag": 4, "samstag": 5, "sonntag": 6}
+_MONATE = {"januar": 1, "jänner": 1, "februar": 2, "märz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6, "juli": 7,
+           "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12}
+_WT = r"(montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)"
+
+def _naechster_wochentag(basis, wt, mindestens=1):
+    tage = (wt - basis.weekday()) % 7
+    if tage < mindestens:
+        tage += 7
+    return basis + timedelta(days=tage)
+
+def _frist_aus_text(satz, basis):
+    """(datum, gefundene Formulierung) oder None. basis = Datum der Mail."""
+    s = satz.lower()
+    m = re.search(r"\b(?:bis|spätestens|spaetestens|zum)\s+(?:zum\s+|spätestens\s+)?(\d{1,2})\.\s?(\d{1,2})\.(\d{2,4})?", s)
+    if m:
+        tag, mon = int(m.group(1)), int(m.group(2))
+        jahr = int(m.group(3)) if m.group(3) else basis.year
+        if jahr < 100:
+            jahr += 2000
+        try:
+            d = date(jahr, mon, tag)
+        except ValueError:
+            d = None
+        if d and not m.group(3) and d < basis:
+            try:
+                d = date(jahr + 1, mon, tag)
+            except ValueError:
+                d = None
+        if d:
+            return d, m.group(0)
+    m = re.search(r"\b(?:bis|spätestens|spaetestens)\s+(?:zum\s+)?(\d{1,2})\.\s*(" + "|".join(_MONATE) + r")\b", s)
+    if m:
+        try:
+            d = date(basis.year, _MONATE[m.group(2)], int(m.group(1)))
+            if d < basis:
+                d = date(basis.year + 1, d.month, d.day)
+            return d, m.group(0)
+        except ValueError:
+            pass
+    m = re.search(r"\b(?:bis|spätestens|spaetestens)\s+(?:(?:zum|am)\s+)?(?:kommenden\s+|nächsten\s+|naechsten\s+)?" + _WT, s)
+    if m:
+        return _naechster_wochentag(basis, _WOCHENTAGE[m.group(1)]), m.group(0)
+    m = re.search(r"\b(?:bis|spätestens|spaetestens)\s+(übermorgen|uebermorgen|morgen)\b", s)
+    if m:
+        return basis + timedelta(days=2 if m.group(1).startswith(("ü", "ue")) else 1), m.group(0)
+    m = re.search(r"\b(?:bis\s+(?:zum\s+)?ende\s+(?:der|dieser)\s+woche|bis\s+wochenende|diese\s+woche\s+noch)\b", s)
+    if m:
+        return _naechster_wochentag(basis, 4, mindestens=0), m.group(0)
+    m = re.search(r"\b(?:bis\s+(?:zum\s+)?)?(?:anfang\s+)?(?:nächste|naechste|kommende)n?\s+woche\b", s)
+    if m:
+        return _naechster_wochentag(basis, 0), m.group(0)
+    m = re.search(r"\bbis\s+(?:zum\s+)?(?:monatsende|ende\s+(?:des|dieses)\s+monats)\b", s)
+    if m:
+        naechster = date(basis.year + (basis.month == 12), basis.month % 12 + 1, 1)
+        return naechster - timedelta(days=1), m.group(0)
+    m = re.search(r"\b(?:in|innerhalb\s+von|binnen)\s+(\d{1,2})\s+(tag|tage|tagen|woche|wochen)\b", s)
+    if m:
+        n = int(m.group(1)) * (7 if m.group(2).startswith("woche") else 1)
+        return basis + timedelta(days=n), m.group(0)
+    if re.search(r"\b(heute\s+noch|noch\s+heute|bis\s+heute\s+abend)\b", s):
+        return basis, "heute noch"
+    return None
+
+_SATZENDE = re.compile(r"(?<=[A-Za-zÄÖÜäöüß)\"“”][.!?])\s+|\n+")
+
+def _saetze(text):
+    zitat = re.split(r"\n\s*(?:-{2,}\s*(?:original|ursprüngliche)|am .{5,80} schrieb|von:\s|from:\s|on .{5,80} wrote)", text or "",
+                     maxsplit=1, flags=re.I)[0]
+    return [x.strip() for x in _SATZENDE.split(zitat) if x and len(x.strip()) > 6][:80]
+
+def _aufgabe_titel(satz, richtung, name):
+    s = satz.strip().rstrip(".!?")
+    kl = s.lower()
+    wer = (name or "").strip()
+    if re.search(r"\b(rückruf|zurückrufen|zurueckrufen|anrufen|melden sie sich|telefonisch)\b", kl):
+        return f"Rückruf {wer}".strip(), True
+    if richtung == "ein" and re.search(r"\b(schicke|sende|reiche|liefere|melde|gebe)\s+ich\b|\bich\s+(schicke|sende|reiche|liefere|melde|gebe)\b|\bbekommen sie\b|\berhalten sie\b", kl):
+        return (f"Nachhalten: {s}" if len(s) <= 70 else f"Nachhalten: {s[:67]}…"), False
+    bitte = bool(re.search(r"\b(könnten sie|können sie|koennten sie|würden sie|bitte|kannst du|könntest du)\b", kl))
+    titel = s if len(s) <= 80 else s[:77] + "…"
+    return titel, bitte or richtung == "aus"
+
+def frist_vorschlag(text, mail_datum, richtung="ein", name=""):
+    """Aufgabenvorschlag aus der ersten Frist im Mailtext (nicht im zitierten Verlauf)."""
+    try:
+        basis = date.fromisoformat(str(mail_datum)[:10])
+    except ValueError:
+        basis = date.today()
+    for satz in _saetze(text):
+        f = _frist_aus_text(satz, basis)
+        if f:
+            titel, vorhaken = _aufgabe_titel(satz, richtung, name)
+            return {"title": titel, "deadline": f[0].isoformat(), "satz": satz[:240], "frist": f[1], "vorhaken": vorhaken}
+    return None
+
+# Terminbuchung ueber Zeeg (Benachrichtigung "Neuer Termin: <Art> | <Name> | <Datum>")
+_EMAIL_RE = r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+"
+
+def _datum_de(text):
+    m = re.search(r"(\d{1,2})\.\s*(" + "|".join(_MONATE) + r")\s+(\d{4})(?:\D{1,3}(\d{1,2}):(\d{2}))?", (text or "").lower())
+    if not m:
+        return None, ""
+    try:
+        d = date(int(m.group(3)), _MONATE[m.group(2)], int(m.group(1)))
+    except ValueError:
+        return None, ""
+    return d, (f"{m.group(4).zfill(2)}:{m.group(5)}" if m.group(4) else "")
+
+def lead_erkennen(subject, sender, sender_name, body_text, reply_to=""):
+    subj = (subject or "").strip()
+    absender = f"{sender_name or ''} {sender or ''}".lower()
+    if not (re.match(r"^\s*neuer termin\s*:", subj, re.I) and ("zeeg" in absender or "ein neuer termin ist gebucht" in (body_text or "").lower())):
+        return None
+    teile = [t.strip() for t in re.sub(r"^\s*neuer termin\s*:\s*", "", subj, flags=re.I).split("|")]
+    art = re.sub(r"^[^\wÄÖÜäöü]+", "", teile[0]).strip() if teile else ""
+    name = teile[1] if len(teile) > 1 else re.sub(r"\s*\(über zeeg\)\s*$", "", sender_name or "", flags=re.I).strip()
+    text = body_text or ""
+    email_ = ""
+    m = re.search(r"teilnehmer\s*:?\s*(.{0,120}?)(" + _EMAIL_RE + r")", text, re.I | re.S)
+    if m:
+        email_ = m.group(2)
+        kandidat = re.sub(r"[\s\-–:]+$", "", m.group(1)).strip()
+        if kandidat and len(kandidat) < 80 and not name:
+            name = kandidat
+    if not email_ and reply_to and "zeeg" not in reply_to.lower():
+        email_ = reply_to
+    termin, uhrzeit = _datum_de(" ".join(teile[2:]) if len(teile) > 2 else text)
+    ort = ""
+    m = re.search(r"\bort\s*:?\s*\n?\s*([^\n]{1,80})", text, re.I)
+    if m:
+        ort = m.group(1).strip()
+    info = ""
+    m = re.search(r"weitere informationen\s*(.*?)(?:\n\s*(?:abmelden|termin verwalten|absagen|verschieben)\b|$)", text, re.I | re.S)
+    if m:
+        roh = re.sub(r"\s*\n\s*", " ", m.group(1)).strip()
+        antworten = []
+        for frage, antwort in re.findall(r"\d\)\s*(.*?):\s*(.*?)(?=\s+\d\)\s|$)", roh):
+            if not re.search(r"datenverarbeitung|datenschutz|einwilligung", frage, re.I) and antwort.strip():
+                antworten.append(antwort.strip())
+        info = ("; ".join(antworten) if antworten else roh)[:600]
+    domain = email_.rsplit("@", 1)[-1].lower() if "@" in email_ else ""
+    firma = ""
+    if domain and domain not in FREEMAIL_DOMAINS:
+        basis = domain.rsplit(".", 1)[0]
+        firma = " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-.]", basis) if w)
+    return {"quelle": "Zeeg", "art": art, "name": name, "email": email_.lower(), "firma": firma,
+            "termin": termin.isoformat() if termin else "", "uhrzeit": uhrzeit, "ort": ort, "info": info}
+
+# Weitere Unternehmen (Aufteilen)
+_RECHTSFORM = re.compile(r"\b(gmbh\s*&\s*co\.?\s*kg|gmbh|mbh|ug\s*\(haftungsbeschränkt\)|ug|ag|kg|ohg|gbr|e\.\s?k\.?|e\.\s?v\.?|kgaa|se|ltd\.?|inc\.?|partg(?:mbb)?|co\.?)\b", re.I)
+
+def _firmen_kern(name):
+    kern = _RECHTSFORM.sub(" ", name or "")
+    kern = re.sub(r"[&,.()]+", " ", kern)
+    return re.sub(r"\s+", " ", kern).strip().lower()
+
+def weitere_firmen(haupt, adressen, texte, empfaenger_vorhaken=False):
+    """[{firma, grund}] fuer Unternehmen ausser `haupt`, die als Kontakt unter den
+    Empfaengern stehen oder im Betreff bzw. in Anhangnamen genannt sind."""
+    gefunden, aus_reihe = {}, []
+    haupt_l = (haupt or "").lower()
+    eigene = {r["n"] for r in _q("SELECT lower(name) AS n FROM firmen WHERE art='intern'")} if _spalte_da("firmen", "art") else set()
+    for a in adressen or []:
+        m = match_contact_for_email(a)
+        if m and m.get("type") == "person" and m["firma"].lower() not in (haupt_l, *eigene) and m["firma"] not in gefunden:
+            gefunden[m["firma"]] = (f"{m.get('person') or a} steht unter den Empfängern", empfaenger_vorhaken)
+            aus_reihe.append(m["firma"])
+    text = " ".join(t for t in texte if t).lower()
+    text_norm = re.sub(r"[_\-.]+", " ", text)
+    if text_norm.strip():
+        for f in _q("SELECT name FROM firmen WHERE archiviert_am IS NULL"):
+            n = f["name"]
+            if n.lower() in (haupt_l, *eigene) or n in gefunden:
+                continue
+            kern = _firmen_kern(n)
+            woerter = [w for w in kern.split() if len(w) >= 4]
+            if not woerter:
+                continue
+            treffer = re.search(r"\b" + re.escape(kern) + r"\b", text_norm) or \
+                      (len(woerter[0]) >= 6 and re.search(r"\b" + re.escape(woerter[0]) + r"\b", text_norm))
+            if treffer:
+                gefunden[n] = ("im Betreff oder in einem Anhangnamen genannt", True)
+                aus_reihe.append(n)
+    return [{"firma": n, "grund": gefunden[n][0], "vorhaken": gefunden[n][1]} for n in aus_reihe[:5]]
+
+def firma_fuer_anhang(dateiname, firmen):
+    """Welches der Unternehmen steckt im Dateinamen? Sonst None."""
+    d = re.sub(r"[_\-.]+", " ", (dateiname or "").lower())
+    for f in firmen:
+        kern = _firmen_kern(f)
+        woerter = [w for w in kern.split() if len(w) >= 4]
+        if kern and (kern in d or (woerter and woerter[0] in d.split())):
+            return f
     return None
 
 
@@ -6098,7 +7538,7 @@ STARTANSICHTEN = {
     "heute": "Heute", "tasks": "Aufgaben", "contacts": "Unternehmen", "persons": "Kontakte",
     "pipeline": "Projekt", "mailreview": "Mail-Review", "journal": "Journal",
 }
-PROJEKT_STATUS_WERTE = ("lead", "aktiv", "pausiert", "won", "lost", "inaktiv")
+PROJEKT_STATUS_WERTE = tuple(PROJEKT_PHASEN)
 AKZENTFARBEN = {
     "indigo": ("Indigo", "#4f46e5", "#4338ca"),
     "blau": ("Blau", "#2563eb", "#1d4ed8"),
@@ -6113,7 +7553,7 @@ MENUE_PUNKTE = {
     "archiv": "🗄 Archiv", "einstellungen": "⚙️ Einstellungen",
 }
 MAX_FAVORITEN = 6
-BENUTZER_DEFAULTS = {"startansicht": "heute", "projekt_status": ["lead", "aktiv", "pausiert"], "akzent": "indigo",
+BENUTZER_DEFAULTS = {"startansicht": "heute", "projekt_status": ["anbahnung", "angebot", "laeuft"], "akzent": "indigo",
                      "favoriten": ["heute", "tasks", "contacts", "pipeline"]}
 AUTO_ARCHIV_STUFEN = (0, 7, 14, 30, 60, 90)
 MAIL_INTERVALLE = (5, 10, 15, 30, 60)
@@ -6517,6 +7957,30 @@ def _mail_ordnername(row):
     betreff = re.sub(r"\s+", " ", betreff).strip(" .")[:80]
     return f"{datum} {betreff or 'ohne Betreff'}"
 
+MAIL_REVIEW_HALTEN_TAGE = 30     # erledigte/verworfene Eintraege so lange sichtbar (Rueckgaengig)
+MAIL_REVIEW_OFFEN_TAGE = 90      # offene Eintraege danach automatisch "nicht ins CRM"
+
+def mail_review_offen_anzahl():
+    r = _q1("SELECT count(*) AS n FROM mail_review_queue WHERE status='pending'")
+    return r["n"] if r else 0
+
+def _mail_ergebnis_text(e):
+    if not e:
+        return ""
+    if e.get("text"):
+        return e["text"]
+    teile = []
+    if e.get("journal"):
+        fl = e.get("firmen") or [e.get("firma", "")]
+        teile.append("Journal bei " + (" und ".join(fl) if len(fl) <= 2 else f"{len(fl)} Unternehmen"))
+    if e.get("task_id"):
+        teile.append("Aufgabe " + e["task_id"])
+    if e.get("abgelegt"):
+        teile.append(f'{e["abgelegt"]} Anhang' + ("" if e["abgelegt"] == 1 else "e") + " im Kundenordner")
+    if e.get("acos"):
+        teile.append(f'{e["acos"]} an ACOS')
+    return " · ".join(teile) or "Übernommen"
+
 def load_mail_review_queue():
     rows = _q("SELECT * FROM mail_review_queue ORDER BY received_at DESC")
     anh = {}
@@ -6537,7 +8001,15 @@ def load_mail_review_queue():
         "body_excerpt": r["body_excerpt"] or "", "match": r["match"], "category": r["category"],
         "summary": r["summary"], "task_suggestion": r["task_suggestion"], "llm_error": r["llm_error"],
         "status": r["status"],
-        "anhaenge": anh.get(r["id"], []),
+        "richtung": r.get("richtung") or "ein",
+        "an": r.get("an") or "",
+        "newsletter": bool(r.get("newsletter")),
+        "erledigt_am": _iso(r.get("erledigt_am")) if r.get("erledigt_am") else "",
+        "ergebnis": _mail_ergebnis_text(r.get("ergebnis")),
+        "lead": r.get("lead"),
+        "firmen": r.get("firmen") or [],
+        "anhaenge": [dict(a, firma_vorschlag=firma_fuer_anhang(a["name"], [x["firma"] for x in (r.get("firmen") or [])]) or "")
+                     for a in anh.get(r["id"], [])],
         "acos_verknuepft": bool(r["match"] and r["match"].get("firma") and (r["match"]["firma"] or "").lower() in acos_firmen),
         "ablage": f"/{kunden_ablage_basis()}/{(r['match'] or {}).get('firma') or '<Firma>'}/Mail-Eingang/{_mail_ordnername(r)}",
     } for r in rows]
@@ -6565,10 +8037,11 @@ def add_mail_ignore(muster, art):
     _x("INSERT INTO mail_ignoriert (muster, art) VALUES (%s,%s) ON CONFLICT (muster) DO UPDATE SET art=EXCLUDED.art",
        (muster, art))
     # offene Vorschlaege dieses Absenders bzw. dieser Domain gleich mit entfernen
-    if art == "adresse":
-        _x("DELETE FROM mail_review_queue WHERE lower(von)=%s", (muster,))
-    else:
-        _x("DELETE FROM mail_review_queue WHERE lower(von) LIKE %s", ("%@" + muster,))
+    ziel = "lower(von)=%s" if art == "adresse" else "lower(von) LIKE %s"
+    _x(f"""UPDATE mail_review_queue SET status='weg', erledigt_am=now(),
+              ergebnis='{{"text": "Absender ignoriert"}}'::jsonb
+           WHERE status IN ('pending','spaeter') AND {ziel}""",
+       (muster if art == "adresse" else "%@" + muster,))
 
 def remove_mail_ignore(muster):
     _x("DELETE FROM mail_ignoriert WHERE muster=%s", ((muster or "").strip().lower(),))
@@ -6604,8 +8077,9 @@ def assign_mail_review_item(item_id, body):
             kandidaten = dubletten_fuer(name, email, "", "", vorh["id"] if vorh else None)
             if kandidaten:
                 raise DubletteFehler(kandidaten)
+    quelle = (body.get("quelle") or "Mail").strip()[:40]
     if firma_neu:
-        create_contact({"firma": firma, "status": "lead", "source": "Mail",
+        create_contact({"firma": firma, "status": "lead", "source": quelle,
                         "next_action": ""})
     firma_row = _q1("SELECT id, name FROM firmen WHERE lower(name)=lower(%s)", (firma,))
     if firma_row and _q1("SELECT archiviert_am FROM firmen WHERE id=%s", (firma_row["id"],))["archiviert_am"]:
@@ -6616,7 +8090,8 @@ def assign_mail_review_item(item_id, body):
                        (firma_row["id"], name, email))
         if not existing:
             create_contact({"firma": firma_row["name"], "ansprechpartner": name, "email": email,
-                            "status": "lead", "source": "Mail", "trotz_dublette": True})
+                            "phone": (body.get("telefon") or "").strip(),
+                            "status": "lead", "source": quelle, "trotz_dublette": True})
         match = {"type": "person", "firma": firma_row["name"], "person": name, "person_email": email}
     _x("UPDATE mail_review_queue SET match=%s::jsonb WHERE id=%s",
        (json.dumps(match, ensure_ascii=False), item_id))
@@ -6633,32 +8108,75 @@ def handle_mail_intake(payload):
     body_text = payload.get("body") or ""
 
     anhaenge = [a for a in (payload.get("anhaenge") or []) if isinstance(a, dict)]
+    richtung = "aus" if payload.get("richtung") == "aus" else "ein"
+    an = []
+    for a in (payload.get("an") or []):
+        a = str(a or "").strip().lower()
+        if "@" in a and a not in an:
+            an.append(a)
     def _weg(grund):
         _anhaenge_dateien_loeschen([a.get("datei") for a in anhaenge if a.get("datei")])
         return {"ok": True, "skipped": True, "reason": grund}
-    if is_sender_ignored(sender):
-        return _weg("Absender steht auf der Ignorierliste")
     item_id = _mail_item_id(message_id, sender, subject)
     if _q1("SELECT 1 FROM mail_review_queue WHERE id=%s", (item_id,)):
-        return _weg("Mail bereits in Review-Warteschlange")
+        return _weg("Mail ist schon im Review (oder war es)")
     if message_id and task_exists_for_mail(message_id):
         return _weg("Bereits als Aufgabe übernommen")
-
-    match = match_contact_for_email(sender)
-    classification = classify_mail_with_llm(subject, sender, body_text)
+    if richtung == "aus":
+        # Gesendete Mail: nur, wenn ein Empfaenger ein bekannter Kontakt ist (Festlegung 31.10.2026)
+        match = None
+        for a in an:
+            if is_sender_ignored(a):
+                continue
+            match = match_contact_for_email(a)
+            if match:
+                break
+        if not match:
+            return _weg("Gesendet an niemanden aus dem CRM")
+        classification = {"category": None, "summary": None, "task_suggestion": None, "llm_error": None}
+    else:
+        if is_sender_ignored(sender):
+            return _weg("Absender steht auf der Ignorierliste")
+        match = match_contact_for_email(sender)
+        classification = classify_mail_with_llm(subject, sender, body_text)
     task_suggestion = classification.get("task_suggestion")
+    summary = classification.get("summary")
+    newsletter = bool(payload.get("newsletter"))
+    datum = payload.get("date") or TODAY
+    lead = lead_erkennen(subject, sender, payload.get("from_name"), body_text, payload.get("reply_to") or "") if richtung == "ein" else None
+    if lead:
+        newsletter = False
+        if lead.get("email"):
+            match = match_contact_for_email(lead["email"]) or None
+        termin = (f'{lead["termin"][8:10]}.{lead["termin"][5:7]}.{lead["termin"][:4]}' if lead.get("termin") else "?") + (f' {lead["uhrzeit"]}' if lead.get("uhrzeit") else "")
+        summary = f'Termin über {lead["quelle"]} gebucht: {lead.get("art") or "Termin"} am {termin}' + \
+                  (f' ({lead["ort"]})' if lead.get("ort") else "") + (f'. Hinweis: {lead["info"]}' if lead.get("info") else "")
+        task_suggestion = {"title": f'{"Erstgespräch" if not match else "Termin"} vorbereiten: {lead.get("name") or "Termin"}',
+                           "deadline": lead.get("termin") or "", "vorhaken": True, "satz": "", "frist": ""}
+    elif not task_suggestion and not newsletter:
+        name = (match or {}).get("person") or (payload.get("from_name") or "")
+        task_suggestion = frist_vorschlag(body_text, datum, richtung, name)
+    firmen = []
+    if match and match.get("firma"):
+        weitere_adr = [a for a in an if not (richtung == "aus" and a == (match.get("person_email") or "").lower())]
+        firmen = weitere_firmen(match["firma"], weitere_adr,
+                                [subject] + [str(a.get("name") or "") for a in anhaenge], richtung == "aus")
 
     _x("""
         INSERT INTO mail_review_queue
-            (id, message_id, von, von_name, betreff, datum, body_excerpt, match, category, summary, task_suggestion, llm_error, status)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,'pending')
+            (id, message_id, von, von_name, betreff, datum, body_excerpt, match, category, summary, task_suggestion, llm_error, status,
+             richtung, an, ordner, newsletter, lead, firmen)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,'pending',%s,%s,%s,%s,%s::jsonb,%s::jsonb)
     """, (
         item_id, message_id, sender, (payload.get("from_name") or "").strip() or None,
-        subject, payload.get("date") or TODAY, body_text[:1000],
+        subject, datum, body_text[:4000],
         json.dumps(match, ensure_ascii=False) if match is not None else None,
-        classification.get("category"), classification.get("summary"),
+        classification.get("category"), summary,
         json.dumps(task_suggestion, ensure_ascii=False) if task_suggestion is not None else None,
         classification.get("llm_error"),
+        richtung, ", ".join(an) or None, (payload.get("ordner") or None), newsletter,
+        json.dumps(lead, ensure_ascii=False) if lead else None,
+        json.dumps(firmen, ensure_ascii=False) if firmen else None,
     ))
     if anhaenge and _tabelle_da("mail_anhaenge"):
         for a in anhaenge[:50]:
@@ -6680,6 +8198,8 @@ def confirm_mail_review_item(item_id, body=None):
     row = _q1("SELECT * FROM mail_review_queue WHERE id=%s", (item_id,))
     if not row:
         raise FileNotFoundError(f"Review-Eintrag nicht gefunden: {item_id}")
+    if row["status"] not in ("pending", "spaeter"):
+        raise ValueError("Diese Mail ist schon erledigt")
 
     match = row["match"]
     if not (match and match.get("firma")):
@@ -6697,52 +8217,141 @@ def confirm_mail_review_item(item_id, body=None):
         ablegen = [a for a in anh_rows if a["datei"]]          # ohne Auswahl: alle gespeicherten
     else:
         ablegen = [a for a in anh_rows if a["datei"] and wahl.get(a["id"], {}).get("ablegen")]
+    # Aufteilen (Umbau Schritt 10): Hauptunternehmen plus gewaehlte weitere
+    erlaubt = [match["firma"]] + [f["firma"] for f in (row.get("firmen") or []) if f.get("firma")]
+    gewaehlt = [f for f in ((body or {}).get("firmen") or [match["firma"]]) if f in erlaubt] or [match["firma"]]
+    if match["firma"] not in gewaehlt:
+        gewaehlt.insert(0, match["firma"])
+    anh_firma = {}
+    for a in ablegen:
+        z = (wahl.get(a["id"], {}) or {}).get("firma")
+        anh_firma[a["id"]] = z if z in gewaehlt else match["firma"]
     ablage = None
     if ablegen:
         import acos_sync
         try:
             ablage = acos_sync.Ablage()
-            if not ablage.gibt_es(match["firma"]):
-                raise ValueError(f"Kundenordner „{match['firma']}“ fehlt unter /{kunden_ablage_basis()}. "
-                                 "Bitte anlegen oder die Anhänge abwählen.")
+            for fz in sorted(set(anh_firma.values())):
+                if not ablage.gibt_es(fz):
+                    raise ValueError(f"Kundenordner „{fz}“ fehlt unter /{kunden_ablage_basis()}. "
+                                     "Bitte anlegen oder die Anhänge abwählen.")
         except acos_sync.AcosFehler as e:
             raise ValueError(f"Anhänge können nicht abgelegt werden: {e}")
     ergebnis = {"ok": True, "abgelegt": 0, "acos": 0, "meldungen": []}
+    merk = {"firma": match["firma"]}
+    body = body or {}
     if match and match.get("firma"):
         firma = match["firma"]
-        if not activity_exists_for_mail(firma, row["message_id"]):
-            text = f"✉️ Mail: {row['betreff'] or '(ohne Betreff)'}"
-            if row["summary"]:
-                text += f" — {row['summary']}"
-            add_activity(firma, {
-                "date": _d(row["datum"]) or TODAY,
-                "text": text,
-                "source": "email",
-                "person": match.get("person") or "",
-                "mail_id": row["message_id"] or item_id,
-            })
+        mail_id = row["message_id"] or item_id
+        pfeil = "📤 Mail gesendet:" if row.get("richtung") == "aus" else "✉️ Mail:"
+        text = f"{pfeil} {row['betreff'] or '(ohne Betreff)'}"
+        if row.get("lead") and row["summary"]:
+            text = f"📅 {row['summary']}"
+        elif row["summary"]:
+            text += f" — {row['summary']}"
+        if body.get("journal", True):
+            merk["aktivitaet_ids"], merk["firmen"] = [], []
+            for fz in gewaehlt:
+                if activity_exists_for_mail(fz, mail_id):
+                    continue
+                add_activity(fz, {
+                    "date": _d(row["datum"]) or TODAY,
+                    "text": text + (f" (betrifft auch {', '.join(x for x in gewaehlt if x != fz)})" if len(gewaehlt) > 1 else ""),
+                    "source": "email",
+                    "person": (match.get("person") or "") if fz == firma else "",
+                    "mail_id": mail_id,
+                })
+                akt = _q1("""SELECT a.id FROM aktivitaeten a JOIN firmen f ON f.id=a.firma_id
+                             WHERE lower(f.name)=lower(%s) AND a.payload->>'mail_id'=%s ORDER BY a.id DESC LIMIT 1""",
+                          (fz, mail_id))
+                if akt:
+                    merk["aktivitaet_ids"].append(akt["id"])
+                merk["firmen"].append(fz)
+            merk["journal"] = bool(merk["firmen"])
         if ablegen:
-            ergebnis.update(_mail_anhaenge_ablegen(row, firma, ablegen, wahl, ablage))
-        suggestion = row["task_suggestion"]
-        if suggestion and suggestion.get("title") and not task_exists_for_mail(row["message_id"] or item_id):
+            orte = []
+            for fz in sorted(set(anh_firma.values()), key=lambda x: gewaehlt.index(x)):
+                teil = [a for a in ablegen if anh_firma[a["id"]] == fz]
+                r = _mail_anhaenge_ablegen(row, fz, teil, wahl, ablage)
+                ergebnis["abgelegt"] += r.get("abgelegt", 0)
+                ergebnis["acos"] += r.get("acos", 0)
+                ergebnis["meldungen"] += r.get("meldungen", [])
+                orte.append(r.get("ordner"))
+            ergebnis["ordner"] = ", ".join(o for o in orte if o)
+            merk["abgelegt"], merk["acos"], merk["ordner"] = ergebnis["abgelegt"], ergebnis["acos"], ergebnis["ordner"]
+        if "aufgabe" in body:
+            auf = body.get("aufgabe") or None
+            titel = ((auf or {}).get("title") or "").strip()
+            deadline = (auf or {}).get("deadline") or ""
+        else:
+            suggestion = row["task_suggestion"] or {}
+            titel = (suggestion.get("title") or "").strip()
             deadline = ""
             days = suggestion.get("deadline_days")
             if isinstance(days, (int, float)):
                 deadline = (date.today() + timedelta(days=int(days))).isoformat()
-            # Tasks brauchen seit dem Postgres-Umstieg zwingend ein Projekt
-            # (tasks.projekt_id NOT NULL).
-            projekt_id = default_projekt_for_firma(firma)
-            create_task({
-                "title": suggestion["title"],
-                "projekt_id": projekt_id,
+        if titel and not task_exists_for_mail(mail_id):
+            # Seit Umbau Schritt 5 ohne Sammelprojekt: direkt am Unternehmen.
+            merk["task_id"] = create_task({
+                "title": titel,
+                "firma": firma,
+                "herkunft": "mail",
                 "category": "Follow-up",
-                "notes": f"Automatisch vorgeschlagen aus Mail: {row['betreff'] or ''}",
+                "notes": f"Aus Mail: {row['betreff'] or ''}",
                 "deadline": deadline,
-                "quelle_mail_id": row["message_id"] or item_id,
+                "quelle_mail_id": mail_id,
             })
-    _mail_anhaenge_verwerfen(item_id)
-    _x("DELETE FROM mail_review_queue WHERE id=%s", (item_id,))
+    _x("UPDATE mail_review_queue SET status='erledigt', erledigt_am=now(), ergebnis=%s::jsonb WHERE id=%s",
+       (json.dumps(merk, ensure_ascii=False), item_id))
+    ergebnis["text"] = _mail_ergebnis_text(merk)
     return ergebnis
+
+def mail_review_spaeter(item_id):
+    n = _x("UPDATE mail_review_queue SET status='spaeter' WHERE id=%s AND status IN ('pending','spaeter') RETURNING id", (item_id,))
+    if not n:
+        raise ValueError("Diese Mail ist schon erledigt")
+
+def mail_review_rueckgaengig(item_id):
+    """Erledigt oder "nicht ins CRM" zuruecknehmen. Journal-Eintrag und noch offene
+    Aufgabe aus dieser Mail werden entfernt; Anhaenge im Kundenordner bleiben dort
+    (das CRM loescht nichts in fremden Systemen)."""
+    row = _q1("SELECT * FROM mail_review_queue WHERE id=%s", (item_id,))
+    if not row:
+        raise FileNotFoundError(f"Review-Eintrag nicht gefunden: {item_id}")
+    if row["status"] not in ("erledigt", "weg"):
+        return {"ok": True, "meldungen": []}
+    e = row.get("ergebnis") or {}
+    meldungen = []
+    for aid in (e.get("aktivitaet_ids") or []) + ([e["aktivitaet_id"]] if e.get("aktivitaet_id") else []):
+        if _q1("SELECT 1 FROM aktivitaeten WHERE id=%s", (aid,)):
+            _x("DELETE FROM aktivitaeten WHERE id=%s", (aid,))
+            _audit("aktivitaeten", aid, "delete", alt={"grund": "Mail-Review rückgängig"})
+    if e.get("task_id"):
+        t = _q1("SELECT id, status, archiviert_am FROM tasks WHERE task_id=%s", (e["task_id"],))
+        if t and t["status"] != "Erledigt" and not t["archiviert_am"]:
+            archive_entity("aufgabe", e["task_id"])
+            _x("UPDATE tasks SET quelle_mail_id=NULL WHERE id=%s", (t["id"],))
+        elif t:
+            meldungen.append(f"Aufgabe {e['task_id']} ist schon erledigt und bleibt bestehen.")
+    if e.get("abgelegt"):
+        meldungen.append(f"Die Anhänge bleiben im Kundenordner ({e.get('ordner') or 'Mail-Eingang'}).")
+    _x("UPDATE mail_review_queue SET status='pending', erledigt_am=NULL, ergebnis=NULL WHERE id=%s", (item_id,))
+    return {"ok": True, "meldungen": meldungen}
+
+def mail_review_aufraeumen():
+    """Vom Poller regelmaessig aufgerufen: offene Eintraege nach 90 Tagen auf
+    "nicht ins CRM", erledigte/verworfene nach 30 Tagen endgueltig entfernen
+    (samt vorlaeufiger Anhang-Kopien). Im Postfach bleibt alles unveraendert."""
+    _x("""UPDATE mail_review_queue SET status='weg', erledigt_am=now(),
+              ergebnis='{"text": "Nach 90 Tagen ohne Entscheidung ausgeblendet"}'::jsonb
+          WHERE status IN ('pending','spaeter') AND received_at < now() - make_interval(days => %s)""",
+       (MAIL_REVIEW_OFFEN_TAGE,))
+    alt = _q("""SELECT id FROM mail_review_queue WHERE status IN ('erledigt','weg')
+                AND erledigt_am < now() - make_interval(days => %s)""", (MAIL_REVIEW_HALTEN_TAGE,))
+    for r in alt:
+        _mail_anhaenge_verwerfen(r["id"])
+        _x("DELETE FROM mail_review_queue WHERE id=%s", (r["id"],))
+    return len(alt)
 
 def _mail_anhaenge_ablegen(row, firma, ablegen, wahl, ablage):
     """Angehakte Anhaenge in Kundenordner/Mail-Eingang/<Datum> <Betreff>/ legen,
@@ -6798,9 +8407,17 @@ def _mail_anhaenge_ablegen(row, firma, ablegen, wahl, ablage):
     return {"abgelegt": len(liste), "acos": acos_n, "meldungen": meldungen,
             "ordner": f"/{kunden_ablage_basis()}/{ziel}"}
 
-def discard_mail_review_item(item_id):
-    _mail_anhaenge_verwerfen(item_id)
-    _x("DELETE FROM mail_review_queue WHERE id=%s", (item_id,))
+def discard_mail_review_item(item_id, ignorieren=None):
+    """"Nicht ins CRM": Eintrag wandert nach "Erledigt" (30 Tage Rueckgaengig),
+    im Postfach bleibt die Mail unveraendert. Optional Absender/Domain ignorieren."""
+    row = _q1("SELECT von, richtung FROM mail_review_queue WHERE id=%s", (item_id,))
+    if not row:
+        raise FileNotFoundError(f"Review-Eintrag nicht gefunden: {item_id}")
+    _x("""UPDATE mail_review_queue SET status='weg', erledigt_am=now(), ergebnis='{"text": "Nicht ins CRM"}'::jsonb
+          WHERE id=%s AND status IN ('pending','spaeter')""", (item_id,))
+    if ignorieren in ("adresse", "domain") and row["richtung"] != "aus":
+        ignore_mail_review_item(item_id, ignorieren)
+
 
 
 
@@ -7052,8 +8669,8 @@ def _ta_hinweise_tag(tag, journal, erledigt, offen_heute, ueberfaellig):
         if not fid or fid in gesehen or j["art"] not in ("telefonat", "meeting", "email", "kontakt"):
             continue
         gesehen.add(fid)
-        offen = _q1("""SELECT 1 FROM tasks t JOIN projekte p ON p.id=t.projekt_id
-                       WHERE p.firma_id=%s AND t.status<>'Erledigt' AND t.archiviert_am IS NULL LIMIT 1""", (fid,))
+        offen = _q1("""SELECT 1 FROM tasks t LEFT JOIN projekte p ON p.id=t.projekt_id
+                       WHERE COALESCE(t.firma_id, p.firma_id)=%s AND t.status<>'Erledigt' AND t.archiviert_am IS NULL LIMIT 1""", (fid,))
         if not offen:
             h.append(f"Nach dem Kontakt mit {j['firma']} ist keine offene Aufgabe hinterlegt. Folgeschritt festhalten?")
     return h
@@ -7065,12 +8682,12 @@ def _ta_briefing(tag):
     woche = [_ta_task(r) for r in _ta_offen_sql("AND t.deadline>%s AND t.deadline<=%s ORDER BY t.deadline",
                                                  (fuer, fuer + timedelta(days=6)))]
     fristen = _q("""SELECT p.id, p.name, p.deadline, f.name AS firma FROM projekte p LEFT JOIN firmen f ON f.id=p.firma_id
-                    WHERE p.archiviert_am IS NULL AND p.status IN ('lead','aktiv') AND p.deadline BETWEEN %s AND %s
+                    WHERE p.archiviert_am IS NULL AND p.status IN ('anbahnung','angebot','laeuft') AND p.deadline BETWEEN %s AND %s
                     ORDER BY p.deadline""", (fuer, fuer + timedelta(days=7)))
     ruhig = _q("""SELECT p.id, p.name, f.name AS firma,
                          (SELECT max(a.datum) FROM aktivitaeten a WHERE a.projekt_id=p.id OR (a.projekt_id IS NULL AND a.firma_id=p.firma_id)) AS zuletzt
                   FROM projekte p LEFT JOIN firmen f ON f.id=p.firma_id
-                  WHERE p.archiviert_am IS NULL AND p.status='aktiv'""")
+                  WHERE p.archiviert_am IS NULL AND p.status='laeuft'""")
     grenze = tag - timedelta(days=RUHIG_TAGE)
     ruhig = [{"id": r["id"], "name": r["name"], "firma": r["firma"] or "", "zuletzt": _d(r["zuletzt"])}
              for r in ruhig if not r["zuletzt"] or r["zuletzt"] < grenze]
@@ -7327,6 +8944,188 @@ def heute_tag_view():
             "abschluss": _ta_zeile(_q1("SELECT * FROM tagesabschluss WHERE datum=%s", (tag,))),
             "briefing": briefing}
 
+# ── HEUTE: STARTSEITE MIT TERMINEN (Umbau Schritt 11, Migration 022, 2026-10-31) ──
+WT_KURZ = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+KEIN_KONTAKT_TAGE = 30
+
+def _dm(d):
+    return f"{d.day:02d}.{d.month:02d}."
+
+def _faellig_text(dl, tag):
+    if dl < tag:
+        return f"seit {_dm(dl)}"
+    if dl == tag:
+        return "heute"
+    if dl == tag + timedelta(days=1):
+        return "morgen"
+    return f"{WT_KURZ[dl.weekday()]} {_dm(dl)}"
+
+def _heute_aufgaben(tag):
+    rows = _q(TASK_SELECT + """ WHERE t.archiviert_am IS NULL AND (p.archiviert_am IS NULL) AND t.status <> 'Erledigt'
+                               AND t.deadline IS NOT NULL AND t.deadline <= %s ORDER BY t.deadline, t.created_at""",
+              (tag + timedelta(days=7),))
+    out = {"ueber": [], "heute": [], "woche": []}
+    for r in rows:
+        dl = r["deadline"]
+        gruppe = "ueber" if dl < tag else "heute" if dl == tag else "woche"
+        out[gruppe].append({"taskId": r["task_id"], "titel": r["title"] or "", "firma": r["firma_name"] or "",
+                            "firmaId": str(r["firma_id_eff"]) if r.get("firma_id_eff") else "",
+                            "projekt": r["projekt_name"] or "", "faellig": _faellig_text(dl, tag)})
+    return out
+
+def _vorbereitung(firma_id):
+    if not firma_id:
+        return ""
+    t = _q1("""SELECT title, deadline FROM tasks WHERE COALESCE(firma_id, (SELECT firma_id FROM projekte WHERE id=tasks.projekt_id))=%s
+               AND archiviert_am IS NULL AND status <> 'Erledigt' ORDER BY deadline NULLS LAST, created_at LIMIT 1""", (firma_id,))
+    if t:
+        return f"Offen: {t['title']}" + (f" (bis {_dm(t['deadline'])})" if t["deadline"] else "")
+    f = _q1("SELECT status, source, created_at, next_action FROM firmen WHERE id=%s", (firma_id,))
+    if not f:
+        return ""
+    if f.get("next_action"):
+        return f"Nächster Schritt: {f['next_action']}"
+    if "lead" in (f.get("status") or "").lower():
+        return f"Lead seit {_dm(f['created_at'].date())}" + (f", Quelle {f['source']}" if f.get("source") else "")
+    return ""
+
+def _termin_zeile(r, jetzt):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/Berlin")
+    b, e = r["beginn"].astimezone(tz), (r["ende"] or r["beginn"]).astimezone(tz)
+    return {"id": r["id"], "titel": r["titel"] or "", "ort": r["ort"] or "", "ganztag": r["ganztag"],
+            "zeit": "ganztags" if r["ganztag"] else b.strftime("%H:%M"), "bis": "" if r["ganztag"] else e.strftime("%H:%M"),
+            "tag": f"{WT_KURZ[b.weekday()]} {_dm(b.date())}",
+            "firma": r.get("firma_name") or "", "firmaId": str(r["firma_id"]) if r["firma_id"] else "",
+            "person": r.get("person_name") or "", "zuordnung": r["zuordnung"] or "",
+            "vorbei": (e <= jetzt) and not r["ganztag"], "laeuft": (b <= jetzt < e) and not r["ganztag"],
+            "notiz": r["notiz_status"], "vorbereitung": _vorbereitung(r["firma_id"]) if e > jetzt else ""}
+
+_TERMIN_SELECT = """SELECT t.*, f.name AS firma_name, pe.name AS person_name FROM termin t
+                    LEFT JOIN firmen f ON f.id=t.firma_id LEFT JOIN personen pe ON pe.id=t.person_id"""
+
+def _heute_termine(tag, jetzt):
+    if not _tabelle_da("termin"):
+        return [], []
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/Berlin")
+    start = datetime(tag.year, tag.month, tag.day, tzinfo=tz)
+    ende = start + timedelta(days=1)
+    heute = _q(_TERMIN_SELECT + """ WHERE NOT t.entfernt AND t.beginn < %s AND (t.beginn >= %s OR COALESCE(t.ende, t.beginn) > %s)
+                                   ORDER BY t.ganztag DESC, t.beginn""", (ende, start, start))
+    naechste = _q(_TERMIN_SELECT + " WHERE NOT t.entfernt AND NOT t.ganztag AND t.beginn >= %s ORDER BY t.beginn LIMIT 3", (ende,))
+    return [_termin_zeile(r, jetzt) for r in heute], [_termin_zeile(r, jetzt) for r in naechste]
+
+def _kalender_stand():
+    import kalender
+    stand = {"eingerichtet": kalender.eingerichtet(), "zeitpunkt": "", "ok": True, "meldung": ""}
+    if _tabelle_da("kalender_lauf"):
+        r = _q1("SELECT * FROM kalender_lauf ORDER BY id DESC LIMIT 1")
+        if r:
+            stand.update(zeitpunkt=_iso(r["zeitpunkt"]), ok=r["ok"], meldung=r["meldung"] or "")
+    return stand
+
+def _heute_mails():
+    rows = _q("""SELECT id, von, von_name, betreff, datum, received_at, match, richtung, an, newsletter, lead, firmen, task_suggestion,
+                        (SELECT count(*) FROM mail_anhaenge a WHERE a.mail_id=q.id) AS anh
+                 FROM mail_review_queue q WHERE status='pending' ORDER BY received_at DESC LIMIT 4""")
+    out = []
+    for r in rows:
+        m = r["match"] or {}
+        einfach = bool(m.get("firma")) and not r["anh"] and not (r.get("firmen") or [])
+        ts = r["task_suggestion"] or {}
+        vorschlag = ("Ins Journal von " + m["firma"]) if m.get("firma") else \
+                    ("Als Lead anlegen" if r.get("lead") else "Newsletter, nicht ins CRM" if r["newsletter"] else "Absender unbekannt")
+        if m.get("firma") and ts.get("title") and ts.get("vorhaken", True):
+            vorschlag += f", Aufgabe „{ts['title']}“"
+        out.append({"id": r["id"], "von": ("An " + (m.get("person") or r["an"] or "")) if r["richtung"] == "aus" else (r["von_name"] or r["von"] or ""),
+                    "betreff": r["betreff"] or "", "datum": _d(r["datum"]), "firma": m.get("firma") or "",
+                    "vorschlag": vorschlag, "einfach": einfach,
+                    "aufgabe": ({"title": ts["title"], "deadline": ts.get("deadline") or ""} if einfach and ts.get("title") and ts.get("vorhaken", True) else None)})
+    return out
+
+def _im_blick(tag, contacts, tasks, kal):
+    out = []
+    if kal["eingerichtet"] and not kal["ok"]:
+        out.append({"art": "fehler", "firma": "", "firmaId": "", "text": f"Kalender-Abruf fehlgeschlagen: {kal['meldung']}", "aktion": ""})
+    for c in build_heute_candidates(contacts, tasks)[:4]:
+        out.append({"art": "schritt", "firma": c["firma"], "firmaId": "", "text": f"Nächster Schritt ohne Aufgabe: {c['text']}",
+                    "aktion": "aufgabe", "key": c["key"], "schritt": c["text"]})
+    art_sql = "AND coalesce(f.art,'mandant')='mandant'" if _spalte_da("firmen", "art") else ""
+    for r in _q(f"""SELECT f.id, f.name, GREATEST(f.last_contact, (SELECT max(datum) FROM aktivitaeten a WHERE a.firma_id=f.id)) AS zuletzt
+                    FROM firmen f WHERE f.archiviert_am IS NULL AND lower(coalesce(f.status,'')) LIKE '%%kunde%%' {art_sql}"""):
+        if r["zuletzt"] and (tag - r["zuletzt"]).days >= KEIN_KONTAKT_TAGE:
+            out.append({"art": "ruhig", "firma": r["name"], "firmaId": str(r["id"]),
+                        "text": f"Seit {(tag - r['zuletzt']).days} Tagen kein Kontakt", "aktion": "akte"})
+    for r in _q("""SELECT p.id, p.name, f.name AS firma, f.id AS fid FROM projekte p LEFT JOIN firmen f ON f.id=p.firma_id
+                   WHERE p.archiviert_am IS NULL AND p.status IN ('angebot','laeuft') AND coalesce(p.next_action,'')=''
+                     AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.projekt_id=p.id AND t.archiviert_am IS NULL AND t.status<>'Erledigt')
+                   ORDER BY p.updated_at LIMIT 4"""):
+        out.append({"art": "projekt", "firma": r["firma"] or "", "firmaId": str(r["fid"] or ""),
+                    "text": f"Projekt „{r['name']}“: kein nächster Schritt", "aktion": "projekt", "projektId": str(r["id"])})
+    if _tabelle_da("vertrag"):
+        for r in _q("""SELECT v.bezeichnung, v.kuendbar_bis, f.name, f.id FROM vertrag v JOIN firmen f ON f.id=v.firma_id
+                       WHERE v.archiviert_am IS NULL AND v.kuendbar_bis BETWEEN %s AND %s ORDER BY v.kuendbar_bis""",
+                    (tag, tag + timedelta(days=45))):
+            out.append({"art": "vertrag", "firma": r["name"], "firmaId": str(r["id"]),
+                        "text": f"Vertrag „{r['bezeichnung']}“ kündbar bis {_dm(r['kuendbar_bis'])}", "aktion": "akte"})
+    return out[:10]
+
+def heute_start_view():
+    from zoneinfo import ZoneInfo
+    tag = heute_lokal()
+    jetzt = datetime.now(ZoneInfo("Europe/Berlin"))
+    contacts, tasks = load_contacts(), load_tasks()
+    kal = _kalender_stand()
+    termine, naechste = _heute_termine(tag, jetzt)
+    monate = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember")
+    stunde = jetzt.hour
+    return {"datum_lang": f"{WOCHENTAGE[tag.weekday()]}, {tag.day}. {monate[tag.month - 1]} {tag.year}",
+            "gruss": "Guten Morgen" if stunde < 11 else "Guten Tag" if stunde < 18 else "Guten Abend",
+            "jetzt": jetzt.strftime("%H:%M"), "aufgaben": _heute_aufgaben(tag),
+            "erledigt_heute": len(tag_daten(tag)["erledigt"]),
+            "mails": _heute_mails(), "mails_offen": mail_review_offen_anzahl(),
+            "termine": termine, "naechste": naechste, "kalender": kal,
+            "im_blick": _im_blick(tag, contacts, tasks, kal)}
+
+def termin_notiz(termin_id, body):
+    t = _q1(_TERMIN_SELECT + " WHERE t.id=%s", (int(termin_id),))
+    if not t:
+        raise FileNotFoundError("Termin nicht gefunden")
+    if body.get("keine"):
+        _x("UPDATE termin SET notiz_status='keine' WHERE id=%s", (t["id"],))
+        return {"ok": True}
+    if not t["firma_name"]:
+        raise ValueError("Bitte den Termin zuerst einem Unternehmen zuordnen")
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise ValueError("Bitte kurz notieren, was besprochen wurde")
+    from zoneinfo import ZoneInfo
+    datum = t["beginn"].astimezone(ZoneInfo("Europe/Berlin")).date().isoformat()
+    r = create_journal_entry({"firma": t["firma_name"], "art": "meeting", "datum": datum,
+                              "person": t["person_name"] or "", "text": f"{t['titel']}: {text}"})
+    _x("UPDATE termin SET notiz_status='gespeichert', aktivitaet_id=%s WHERE id=%s", (r["id"], t["id"]))
+    return {"ok": True, "id": r["id"], "firma": t["firma_name"]}
+
+def termin_firma(termin_id, body):
+    t = _q1("SELECT id FROM termin WHERE id=%s", (int(termin_id),))
+    if not t:
+        raise FileNotFoundError("Termin nicht gefunden")
+    name = (body.get("firma") or "").strip()
+    fid = None
+    if name:
+        f = _q1("SELECT id FROM firmen WHERE lower(name)=lower(%s) AND archiviert_am IS NULL", (name,))
+        if not f:
+            raise ValueError(f"Unternehmen nicht gefunden: {name}")
+        fid = f["id"]
+    _x("UPDATE termin SET firma_id=%s, person_id=NULL, firma_manuell=true, zuordnung=%s WHERE id=%s",
+       (fid, "von Hand" if fid else None, t["id"]))
+    return {"ok": True}
+
+def kalender_abgleich():
+    import kalender
+    return kalender.abgleich()
+
 def tagesabschluss_liste(anzahl=14):
     return [_ta_zeile(r) for r in _q("SELECT * FROM tagesabschluss ORDER BY datum DESC LIMIT %s", (anzahl,))]
 
@@ -7469,6 +9268,50 @@ def _kw_auszug(text, wurzeln, breite=90):
         stueck = re.sub("(" + re.escape(w) + r"[\wäöüß]*)", "⟦\\1⟧", stueck, flags=re.IGNORECASE)
     return stueck
 
+# ACOS-Dokumente (kind=document) erscheinen im Kundenwissen nur als Verweis:
+# Titel, Datum, Link in ACOS. Die Datei selbst bleibt in ACOS, das CRM laedt
+# nichts herunter (Variante 2, 03.11.2026).
+ACOS_LINK_STANDARD = "https://acos.alchimedus.pro/clients/{client_id}"
+
+def acos_dokument_link(client_id, acos_id, gespeichert=None):
+    """Link in ACOS: liefert ACOS selbst einen, gilt der. Sonst Vorlage aus
+    config.json (acos.dokument_link, Platzhalter {client_id} und {id})."""
+    if gespeichert:
+        return gespeichert
+    if not client_id:
+        return ""
+    from urllib.parse import quote
+    vorlage = ((load_config().get("acos") or {}).get("dokument_link") or ACOS_LINK_STANDARD)
+    try:
+        return vorlage.format(client_id=quote(str(client_id), safe=""), id=quote(str(acos_id or ""), safe=""))
+    except (KeyError, IndexError, ValueError):
+        return ""
+
+def _kw_acos_dokumente(firma_id, wurzeln=None, q=None):
+    """ACOS-Dokumente der Firma aus dem ACOS-Abgleich (acos_artefakte, art=document).
+    Mit Suchbegriff nur die, deren Titel passt."""
+    bed, args = "", [int(firma_id)]
+    if q:
+        teile = ["to_tsvector('german', a.titel) @@ websearch_to_tsquery('german', %s)"]
+        args.append(q)
+        if wurzeln:
+            teile.append("(" + " AND ".join(["a.titel ILIKE %s"] * len(wurzeln)) + ")")
+            args += ["%" + _like(w)[1:-1] + "%" for w in wurzeln]
+        bed = " AND (" + " OR ".join(teile) + ")"
+    try:
+        rows = _q(f"""SELECT a.id, a.acos_id, a.titel, a.acos_link, v.acos_client_id,
+                             (coalesce(a.acos_erstellt_am, a.acos_geaendert_am, a.erstmals_gesehen)
+                              AT TIME ZONE 'Europe/Berlin')::date AS datum
+                      FROM acos_artefakte a
+                      LEFT JOIN acos_verknuepfung v ON v.firma_id = a.firma_id
+                      WHERE a.firma_id=%s AND a.art='document' AND a.status <> 'entfernt'{bed}
+                      ORDER BY datum DESC NULLS LAST, a.id DESC LIMIT 200""", args)
+    except Exception:
+        return []   # Migration 006 fehlt - dann eben keine ACOS-Dokumente
+    return [{"id": r["id"], "quelle": "acos_dok", "quelle_label": "ACOS-Dokument",
+             "titel": r["titel"] or "Ohne Titel", "datum": _d(r["datum"]),
+             "link": acos_dokument_link(r["acos_client_id"], r["acos_id"], r["acos_link"])} for r in rows]
+
 def kundenwissen_firma(firma_id, params):
     """Ohne Suchbegriff: Besprechungen (neueste zuerst) und ACOS-Dokumente der Firma.
     Mit Suchbegriff: Treffer aus Kundenwissen und Journal, nach Relevanz."""
@@ -7485,7 +9328,8 @@ def kundenwissen_firma(firma_id, params):
                 "ordner_link": _nextcloud_ordner_link(f"{kunden_ablage_basis()}/{f['name']}"),
                 "dokumente": [{"id": r["id"], "quelle": r["quelle"], "quelle_label": KW_QUELLEN[r["quelle"]],
                                "titel": r["titel"] or r["name"], "name": r["name"], "datum": _d(r["datum"]),
-                               "status": r["status"], "link": _kw_ordner_link(f["name"], r["pfad"])} for r in rows]}
+                               "status": r["status"], "link": _kw_ordner_link(f["name"], r["pfad"])} for r in rows],
+                "acos_dokumente": _kw_acos_dokumente(f["id"])}
     # Volltext (deutsche Wortstaemme) plus Wortwurzel-Suche, weil der Postgres-Stemmer
     # "Stundung" und "gestundet" nicht zusammenfuehrt: jede Wurzel muss vorkommen.
     wurzeln = _kw_wurzeln(q)
@@ -7516,6 +9360,9 @@ def kundenwissen_firma(firma_id, params):
                         "datum": _d(r["datum"]),
                         "auszug": r["auszug"] if r["volltext"] else _kw_auszug(r["text"], wurzeln),
                         "rang": float(r["rang"]) + (0 if r["volltext"] else 0.01)})
+    for d in _kw_acos_dokumente(f["id"], wurzeln, q)[:20]:
+        # Nur der Titel ist bekannt - Treffer ohne Auszug, Klick fuehrt nach ACOS
+        treffer.append(dict(d, art="acos_dok", auszug="", rang=0.005))
     treffer.sort(key=lambda t: (t["rang"], t["datum"] or ""), reverse=True)
     return {"firma": f["name"], "q": q, "stand": stand.isoformat() if stand else None, "treffer": treffer[:40]}
 

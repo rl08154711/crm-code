@@ -729,9 +729,10 @@ def abgleich(ausgeloest_von="timer"):
                                    ORDER BY datum""", (fid,))
                 dokumente = [a for a in offen if (a["art"] or "") == "document"]
                 if dokumente:
-                    # Hochgeladene Dateien: knowledge_get liefert nur Metadaten, die Datei selbst
-                    # kommt ueber die Datei-Werkzeuge - folgt in einem spaeteren Schritt.
-                    core._x("""UPDATE acos_artefakte SET meldung='Datei aus ACOS – Ablage folgt in einem späteren Schritt'
+                    # Hochgeladene Dateien (kind=document) bleiben in ACOS. Das CRM fuehrt sie nur
+                    # als Verweis im Kundenwissen (Titel, Datum, Link), laedt sie nicht herunter
+                    # (Variante 2, 03.11.2026).
+                    core._x("""UPDATE acos_artefakte SET meldung='Datei bleibt in ACOS – im Kundenwissen als Verweis'
                                WHERE id = ANY(%s)""", ([a["id"] for a in dokumente],))
                     offen = [a for a in offen if a not in dokumente]
                 meldung_firma = None

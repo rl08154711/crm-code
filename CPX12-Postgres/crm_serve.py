@@ -247,6 +247,9 @@ class CRMHandler(BaseHTTPRequestHandler):
                 self._send_json(core.load_mail_review_queue())
             elif path == "/api/mail-ignore":
                 self._send_json(core.load_mail_ignore())
+            elif path == "/api/heute/start":
+                # Startseite Heute (Umbau Schritt 11): Aufgaben, Mails, Termine, Im Blick
+                self._send_json(core.heute_start_view())
             elif path == "/api/heute/tag":
                 # Heute-Ansicht (Migration 010): Journal des Tages, Abschluss, Briefing
                 self._send_json(core.heute_tag_view())
@@ -260,6 +263,8 @@ class CRMHandler(BaseHTTPRequestHandler):
                 self._send_json(core.wissen_status())
             elif path == "/api/acos/status":
                 self._send_json(core.acos_status_view())
+            elif path == "/api/recherche":
+                self._send_json(core.recherche(parse_qs(urlparse(self.path).query)))
             elif path == "/api/wissen/suche":
                 self._send_json(core.wissen_suche(parse_qs(urlparse(self.path).query)))
             elif len(parts) == 4 and parts[0] == "api" and parts[1] == "wissen" and parts[2] == "datei":
@@ -387,13 +392,10 @@ class CRMHandler(BaseHTTPRequestHandler):
             elif path == "/api/heute/dismiss":
                 dismissed = core.load_dismissed(); dismissed.add(body.get("key", "")); core.save_dismissed(dismissed)
             elif path == "/api/heute/convert":
-                # Tasks brauchen zwingend ein Projekt (tasks.projekt_id NOT NULL) -
-                # dieselbe Sammelprojekt-Logik wie bei aus Mails erzeugten Aufgaben,
-                # siehe core.confirm_mail_review_item.
-                firma = body.get("firma", "")
-                projekt_id = core.default_projekt_for_firma(firma)
+                # Seit Umbau Schritt 5 ohne Sammelprojekt: direkt am Unternehmen
+                # bzw. als eigene Aufgabe, wenn kein Unternehmen dabei ist.
                 core.create_task({
-                    "title": body.get("text", ""), "projekt_id": projekt_id,
+                    "title": body.get("text", ""), "firma": body.get("firma", ""), "herkunft": "heute",
                     "category": "Follow-up", "priority": "Mittel", "status": "Offen",
                 })
                 dismissed = core.load_dismissed(); dismissed.add(body.get("key", "")); core.save_dismissed(dismissed)
@@ -412,6 +414,18 @@ class CRMHandler(BaseHTTPRequestHandler):
                 n = core.archive_done_tasks(body.get("older_than_days", 0))
                 self._send_json({"ok": True, "archiviert": n})
                 return
+            elif path == "/api/kalender/abgleich":
+                self._send_json(core.kalender_abgleich())
+                return
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "termine" and parts[3] in ("notiz", "firma"):
+                try:
+                    fn = core.termin_notiz if parts[3] == "notiz" else core.termin_firma
+                    self._send_json(fn(parts[2], body))
+                except FileNotFoundError as e:
+                    self._send_json({"error": str(e)}, 404, "Not Found")
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, 400, "Bad Request")
+                return
             elif path == "/api/mail-intake":
                 result = core.handle_mail_intake(body)
                 self._send_json(result)
@@ -424,7 +438,16 @@ class CRMHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": str(e)}, 500, "Internal Server Error")
                 return
             elif len(parts) == 4 and parts[0] == "api" and parts[1] == "mail-review" and parts[3] == "discard":
-                core.discard_mail_review_item(parts[2])
+                core.discard_mail_review_item(parts[2], body.get("ignorieren"))
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "mail-review" and parts[3] == "spaeter":
+                try:
+                    core.mail_review_spaeter(parts[2])
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                    return
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "mail-review" and parts[3] == "rueckgaengig":
+                self._send_json(core.mail_review_rueckgaengig(parts[2]))
+                return
             elif len(parts) == 4 and parts[0] == "api" and parts[1] == "mail-review" and parts[3] == "assign":
                 self._send_json({"ok": True, "match": core.assign_mail_review_item(parts[2], body)})
                 return
@@ -487,6 +510,22 @@ class CRMHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
                 return
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "contacts" and parts[3] == "vertraege":
+                # Vertraege bei Lieferanten (Umbau Schritt 4, Migration 015)
+                try:
+                    self._send_json({"ok": True, **core.create_vertrag(unquote(parts[2]), body)})
+                except FileNotFoundError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                return
+            elif path == "/api/beteiligung":
+                # Beteiligte (Umbau Schritt 3, Migration 014)
+                try:
+                    self._send_json({"ok": True, **core.create_beteiligung(body)})
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                return
             elif path == "/api/journal":
                 try:
                     self._send_json({"ok": True, **core.create_journal_entry(body)})
@@ -518,6 +557,15 @@ class CRMHandler(BaseHTTPRequestHandler):
                 core.update_person(unquote(parts[2]), unquote(parts[4]), body)
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "opportunities":
                 core.update_opp(unquote(parts[2]), body)
+            elif len(parts) == 3 and parts[0] == "api" and parts[1] == "vertraege":
+                try:
+                    core.update_vertrag(parts[2], body)
+                except FileNotFoundError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                    return
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                    return
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "journal":
                 try:
                     self._send_json({"ok": True, "eintrag": core.update_journal_entry(parts[2], body)})
@@ -568,6 +616,18 @@ class CRMHandler(BaseHTTPRequestHandler):
                 core.delete_person_activity(unquote(parts[2]))
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "mail-ignore":
                 core.remove_mail_ignore(unquote(parts[2]))
+            elif len(parts) == 3 and parts[0] == "api" and parts[1] == "vertraege":
+                try:
+                    core.archiviere_vertrag(parts[2])
+                except (ValueError, FileNotFoundError) as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                    return
+            elif len(parts) == 3 and parts[0] == "api" and parts[1] == "beteiligung":
+                try:
+                    core.loese_beteiligung(parts[2])
+                except (ValueError, FileNotFoundError) as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                    return
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "journal":
                 try:
                     core.delete_journal_entry(parts[2])

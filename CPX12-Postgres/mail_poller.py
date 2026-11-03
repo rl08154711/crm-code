@@ -71,30 +71,58 @@ def decode_mime_words(s):
     return "".join(out)
 
 
+def _html_zu_text(html_text):
+    """Einfacher HTML-zu-Text-Wandler (Stdlib) fuer Mails ohne text/plain-Teil."""
+    from html.parser import HTMLParser
+    import re
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.teile, self.weg = [], 0
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "head"):
+                self.weg += 1
+            elif tag in ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "table"):
+                self.teile.append("\n")
+        def handle_endtag(self, tag):
+            if tag in ("script", "style", "head"):
+                self.weg = max(0, self.weg - 1)
+            elif tag in ("p", "div", "tr", "li", "table", "h1", "h2", "h3"):
+                self.teile.append("\n")
+        def handle_data(self, data):
+            if not self.weg:
+                self.teile.append(data)
+    p = _P()
+    try:
+        p.feed(html_text)
+    except Exception:
+        return ""
+    text = re.sub(r"[ \t\xa0]+", " ", "".join(p.teile))
+    text = re.sub(r" *\n *", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def extract_body(msg):
+    def _dekodiert(part):
+        try:
+            return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
+        except Exception:
+            return None
     if msg.is_multipart():
-        # bevorzugt text/plain, sonst erste lesbare Alternative
-        plain = None
+        # bevorzugt text/plain, sonst der HTML-Teil als Text
+        plain = html = None
         for part in msg.walk():
             ctype = part.get_content_type()
             disp = str(part.get("Content-Disposition") or "")
             if "attachment" in disp:
                 continue
             if ctype == "text/plain" and plain is None:
-                try:
-                    plain = part.get_payload(decode=True).decode(
-                        part.get_content_charset() or "utf-8", errors="replace"
-                    )
-                except Exception:
-                    pass
-        return plain or ""
-    else:
-        try:
-            return msg.get_payload(decode=True).decode(
-                msg.get_content_charset() or "utf-8", errors="replace"
-            )
-        except Exception:
-            return ""
+                plain = _dekodiert(part)
+            elif ctype == "text/html" and html is None:
+                html = _dekodiert(part)
+        return plain or (_html_zu_text(html) if html else "")
+    text = _dekodiert(msg) or ""
+    return _html_zu_text(text) if msg.get_content_type() == "text/html" else text
 
 
 # ── Anhaenge (Migration 009, 2026-10-26) ─────────────────────────────────────
@@ -157,7 +185,212 @@ def anhaenge_sichern(msg):
     return liste
 
 
-def poll_once(secrets):
+# ── ORDNER (Umbau Schritt 9, 2026-10-31) ─────────────────────────────────────
+# Gelesen werden Posteingang und Gesendet. Das Postfach wird nur lesend
+# geoeffnet (EXAMINE) und Mails mit BODY.PEEK geholt: Der Abruf setzt kein
+# "gelesen"-Flag und veraendert nichts im Postfach.
+SENT_NAMEN = ["Sent", "INBOX.Sent", "Gesendet", "INBOX.Gesendet", "Gesendete Objekte", "INBOX.Gesendete Objekte",
+              "Gesendete Elemente", "Sent Items", "Sent Messages", "INBOX/Sent"]
+
+
+def _ordnerliste(conn):
+    """[(name, flags)] aus IMAP LIST."""
+    import re
+    typ, data = conn.list()
+    if typ != "OK":
+        return []
+    out = []
+    for zeile in data or []:
+        if isinstance(zeile, tuple):
+            zeile = b" ".join(x for x in zeile if isinstance(x, bytes))
+        if not isinstance(zeile, bytes):
+            continue
+        m = re.match(rb'\((?P<flags>[^)]*)\) (?:"[^"]*"|NIL) (?P<name>.+)$', zeile)
+        if not m:
+            continue
+        name = m.group("name").strip()
+        if name.startswith(b'"') and name.endswith(b'"'):
+            name = name[1:-1].replace(b'\\"', b'"')
+        out.append((name.decode("utf-8", errors="replace"), m.group("flags").decode("ascii", errors="replace")))
+    return out
+
+
+def gesendet_ordner(conn, secrets):
+    wunsch = (secrets.get("IMAP_SENT_FOLDER") or "").strip()
+    ordner = _ordnerliste(conn)
+    namen = [n for n, _ in ordner]
+    if wunsch:
+        return wunsch if wunsch in namen else None
+    for n, flags in ordner:
+        if "\\sent" in flags.lower():
+            return n
+    for kandidat in SENT_NAMEN:
+        for n in namen:
+            if n.lower() == kandidat.lower():
+                return n
+    return None
+
+
+def _eigene_adressen(secrets):
+    eigene = {(secrets.get("IMAP_USER") or "").strip().lower()}
+    for a in (secrets.get("MAIL_EIGENE_ADRESSEN") or "").split(","):
+        if a.strip():
+            eigene.add(a.strip().lower())
+    return {a for a in eigene if "@" in a}
+
+
+def _quote(name):
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _ordner_oeffnen(conn, name):
+    typ, _ = conn.select(_quote(name), readonly=True)
+    if typ != "OK":
+        return None
+    typ, val = conn.response("UIDVALIDITY")
+    try:
+        return int(val[0]) if val and val[0] else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _hoechste_uid(conn):
+    typ, data = conn.uid("search", None, "ALL")
+    if typ != "OK" or not data or not data[0]:
+        return 0
+    return max(int(u) for u in data[0].split())
+
+
+def _newsletter(msg):
+    prec = (msg.get("Precedence") or "").strip().lower()
+    return bool(msg.get("List-Unsubscribe")) or prec in ("bulk", "list", "junk")
+
+
+def _imap_datum(d):
+    monate = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{d.day:02d}-{monate[d.month - 1]}-{d.year}"
+
+
+def _uids_melden(conn, name, richtung, uids, zustand, eigene):
+    """Mails mit diesen UIDs holen (ohne Gelesen-Markierung) und ans CRM melden."""
+    for uid in uids:
+        typ, msg_data = conn.uid("fetch", uid, "(BODY.PEEK[])")
+        if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+            continue
+        msg = email.message_from_bytes(msg_data[0][1])
+        message_id = (msg.get("Message-ID") or "").strip()
+        sender_name, sender_email = email.utils.parseaddr(msg.get("From") or "")
+        sender_name = decode_mime_words(sender_name or "")
+        empfaenger = [a.strip().lower() for _, a in email.utils.getaddresses(msg.get_all("To", []) + msg.get_all("Cc", []))
+                      if a and "@" in a]
+        ich = eigene | ({(sender_email or "").strip().lower()} if richtung == "aus" else set())
+        empfaenger = [a for a in empfaenger if a not in ich]
+        try:
+            mail_date = email.utils.parsedate_to_datetime(msg.get("Date") or "").date().isoformat()
+        except Exception:
+            mail_date = datetime.now().date().isoformat()
+        try:
+            anhaenge = anhaenge_sichern(msg)
+        except Exception as e:
+            log(f"Anhaenge konnten nicht gesichert werden: {e}")
+            anhaenge = []
+        ok = _post_mail_intake({
+            "anhaenge": anhaenge,
+            "message_id": message_id,
+            "from": sender_email,
+            "from_name": sender_name,
+            "subject": decode_mime_words(msg.get("Subject") or ""),
+            "date": mail_date,
+            "body": extract_body(msg),
+            "richtung": richtung,
+            "an": empfaenger,
+            "ordner": name,
+            "newsletter": _newsletter(msg),
+            "reply_to": email.utils.parseaddr(msg.get("Reply-To") or "")[1],
+        })
+        if not ok:
+            # CRM nicht erreichbar: Stand nicht weiterschieben, beim naechsten Abruf erneut
+            break
+        zustand["last_uid"] = max(int(zustand.get("last_uid", 0)), int(uid))
+    return len(uids)
+
+
+def _seit_tagen(conn, tage):
+    seit = _imap_datum(datetime.now().date() - timedelta(days=tage))
+    typ, data = conn.uid("search", None, f"SINCE {seit}")
+    if typ != "OK" or not data or not data[0]:
+        return []
+    return data[0].split()
+
+
+def _ordner_abholen(conn, name, richtung, zustand, eigene, nur_zaehlen=False, nachholen_tage=0):
+    """Neue Mails eines Ordners an /api/mail-intake melden. zustand wird angepasst.
+    Ein Ordner, der zum ersten Mal (oder nach UIDVALIDITY-Wechsel) gelesen wird,
+    startet beim aktuellen Stand. Nur bei einem neuen Postfach (nachholen_tage)
+    werden die Mails der letzten Tage einmalig nachgeholt."""
+    uidv = _ordner_oeffnen(conn, name)
+    if uidv is None:
+        log(f"Ordner {name!r} laesst sich nicht oeffnen.")
+        return 0
+    if zustand.get("uidvalidity") not in (None, uidv) or "last_uid" not in zustand:
+        start = _hoechste_uid(conn)
+        if nur_zaehlen:
+            return 0
+        zustand.update({"uidvalidity": uidv, "last_uid": start})
+        log(f"Ordner {name!r}: ab jetzt beobachtet (Start bei UID {start}).")
+        if nachholen_tage:
+            alte = _seit_tagen(conn, nachholen_tage)
+            if alte:
+                log(f"{name}: {len(alte)} Mail(s) der letzten {nachholen_tage} Tage werden nachgeholt.")
+                _uids_melden(conn, name, richtung, alte, zustand, eigene)
+                zustand["last_uid"] = max(start, zustand["last_uid"])
+        return 0
+    zustand["uidvalidity"] = uidv
+    last_uid = int(zustand.get("last_uid", 0))
+    typ, data = conn.uid("search", None, f"UID {last_uid + 1}:*")
+    if typ != "OK":
+        log(f"IMAP-SEARCH in {name!r} fehlgeschlagen: {typ}")
+        return 0
+    uids = [u for u in (data[0] or b"").split() if int(u) > last_uid]
+    if nur_zaehlen or not uids:
+        return len(uids)
+    log(f"{name}: {len(uids)} neue Mail(s).")
+    return _uids_melden(conn, name, richtung, uids, zustand, eigene)
+
+
+NACHHOLEN_NEUES_POSTFACH = 14
+
+
+def nachholen(secrets, tage):
+    """Von Hand: Mails der letzten <tage> Tage aus Posteingang und Gesendet ans CRM melden.
+    Schon bekannte Mails ueberspringt das CRM selbst (Message-ID)."""
+    conn = imaplib.IMAP4_SSL(secrets.get("IMAP_HOST"), int(secrets.get("IMAP_PORT", "993")))
+    state = load_state()
+    try:
+        conn.login(secrets.get("IMAP_USER"), secrets.get("IMAP_PASSWORD"))
+        sent = gesendet_ordner(conn, secrets)
+        for name, richtung in [("INBOX", "ein")] + ([(sent, "aus")] if sent else []):
+            uidv = _ordner_oeffnen(conn, name)
+            if uidv is None:
+                continue
+            uids = _seit_tagen(conn, tage)
+            log(f"{name}: {len(uids)} Mail(s) der letzten {tage} Tage.")
+            zustand = state.setdefault("ordner", {}).setdefault(name, {})
+            if zustand.get("uidvalidity") not in (None, uidv):
+                zustand.clear()
+            zustand["uidvalidity"] = uidv
+            zustand.setdefault("last_uid", _hoechste_uid(conn))
+            _uids_melden(conn, name, richtung, uids, zustand, _eigene_adressen(secrets))
+        state["konto"] = f"{secrets.get('IMAP_USER', '').strip().lower()}@{secrets.get('IMAP_HOST', '').strip().lower()}"
+        save_state(state)
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def poll_once(secrets, nur_pruefen=False):
     host = secrets.get("IMAP_HOST")
     port = int(secrets.get("IMAP_PORT", "993"))
     user = secrets.get("IMAP_USER")
@@ -167,62 +400,38 @@ def poll_once(secrets):
         return
 
     state = load_state()
-    last_uid = int(state.get("last_uid", 0))
+    if "ordner" not in state:
+        # Stand vor Umbau 9: nur last_uid fuer den Posteingang
+        state["ordner"] = {"INBOX": {"uidvalidity": None, "last_uid": int(state.get("last_uid", 0))}} if "last_uid" in state else {}
+    # Zustand gehoert zu genau einem Postfach. Wird in den Einstellungen ein anderes
+    # eingetragen, beginnt der Abruf dort neu und holt die letzten 14 Tage einmal nach.
+    konto = f"{user.strip().lower()}@{host.strip().lower()}"
+    nachholen = 0
+    if state.get("konto") and state["konto"] != konto:
+        if not nur_pruefen:
+            log(f"Anderes Postfach eingetragen ({konto}) - Abruf beginnt dort neu, die letzten {NACHHOLEN_NEUES_POSTFACH} Tage werden nachgeholt.")
+        state["ordner"], nachholen = {}, NACHHOLEN_NEUES_POSTFACH
+    state["konto"] = konto
 
     conn = imaplib.IMAP4_SSL(host, port)
     try:
         conn.login(user, password)
-        conn.select("INBOX")
-        typ, data = conn.uid("search", None, f"UID {last_uid + 1}:*")
-        if typ != "OK":
-            log(f"IMAP-SEARCH fehlgeschlagen: {typ}")
-            return
-        uids = [u for u in data[0].split() if int(u) > last_uid]
-        if not uids:
-            log("Keine neuen Mails.")
-            return
-        log(f"{len(uids)} neue Mail(s) gefunden.")
-
-        max_uid = last_uid
-        for uid in uids:
-            typ, msg_data = conn.uid("fetch", uid, "(RFC822)")
-            if typ != "OK" or not msg_data or not msg_data[0]:
-                continue
-            raw = msg_data[0][1]
-            msg = email.message_from_bytes(raw)
-
-            message_id = (msg.get("Message-ID") or "").strip()
-            sender_raw = msg.get("From") or ""
-            sender_name, sender_email = email.utils.parseaddr(sender_raw)
-            sender_name = decode_mime_words(sender_name or "")
-            subject = decode_mime_words(msg.get("Subject") or "")
-            date_hdr = msg.get("Date") or ""
-            try:
-                dt = email.utils.parsedate_to_datetime(date_hdr)
-                mail_date = dt.date().isoformat()
-            except Exception:
-                mail_date = datetime.now().date().isoformat()
-            body = extract_body(msg)
-            try:
-                anhaenge = anhaenge_sichern(msg)
-            except Exception as e:
-                log(f"Anhaenge konnten nicht gesichert werden: {e}")
-                anhaenge = []
-
-            payload = {
-                "anhaenge": anhaenge,
-                "message_id": message_id,
-                "from": sender_email,
-                "from_name": sender_name,
-                "subject": subject,
-                "date": mail_date,
-                "body": body,
-            }
-            _post_mail_intake(payload)
-            max_uid = max(max_uid, int(uid))
-
-        state["last_uid"] = max_uid
-        save_state(state)
+        sent = gesendet_ordner(conn, secrets)
+        if nur_pruefen:
+            print(f"Anmeldung ok: {user}@{host}")
+            print("Ordner im Postfach: " + ", ".join(n for n, _ in _ordnerliste(conn)))
+            print(f"Gesendet-Ordner erkannt: {sent or 'KEINER (IMAP_SENT_FOLDER in mail.env setzen)'}")
+        ordner = [("INBOX", "ein")] + ([(sent, "aus")] if sent else [])
+        for name, richtung in ordner:
+            zustand = state["ordner"].setdefault(name, {})
+            n = _ordner_abholen(conn, name, richtung, zustand if not nur_pruefen else dict(zustand),
+                                _eigene_adressen(secrets), nur_zaehlen=nur_pruefen, nachholen_tage=nachholen)
+            if nur_pruefen:
+                print(f"{name}: " + (f"{n} neue Mail(s) seit dem letzten Abruf" if "last_uid" in zustand
+                                     else "wird beim ersten Abruf ab jetzt beobachtet (alte Mails werden nicht geholt)"))
+        if not nur_pruefen:
+            state.pop("last_uid", None)
+            save_state(state)
     finally:
         try:
             conn.logout()
@@ -247,32 +456,25 @@ def _post_mail_intake(payload):
             log(f"Übersprungen ({result.get('reason')}): {payload.get('subject')!r}")
         else:
             log(f"Verarbeitet: {payload.get('subject')!r} -> Kategorie {result.get('category')}")
+        return True
     except Exception as e:
-        log(f"FEHLER beim Melden an /api/mail-intake: {e}")
+        log(f"FEHLER beim Melden an /api/mail-intake: {e} - wird beim nächsten Abruf erneut versucht")
+        return False
 
 
 def cleanup_stale_review_items():
-    """Loescht unbestaetigte Review-Eintraege, die aelter als
-    REVIEW_RETENTION_DAYS sind (Konzept 1.7 - Aufbewahrungsfrist fuer rohe
-    Mailkopien/Auszuege). Warteschlange liegt seit dem Postgres-Umstieg
-    (2026-09-11) in der mail_review_queue-Tabelle statt unter Mail-Review/ -
-    load_mail_review_queue() liefert bei leerer Tabelle einfach [], das
-    vorherige Exists-Check auf das Verzeichnis entfaellt daher ersatzlos."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=REVIEW_RETENTION_DAYS)
-    for item in core.load_mail_review_queue():
-        try:
-            received = datetime.fromisoformat(item["received_at"].replace("Z", "+00:00"))
-        except Exception:
-            continue
-        if received < cutoff:
-            core.discard_mail_review_item(item["id"])
-            log(f"Review-Eintrag verworfen (>{REVIEW_RETENTION_DAYS} Tage unbestaetigt): {item.get('subject')!r}")
+    """Offene Review-Eintraege nach 90 Tagen ausblenden, erledigte nach 30 Tagen
+    entfernen (Umbau Schritt 9; Logik in crm_core.mail_review_aufraeumen)."""
+    n = core.mail_review_aufraeumen()
+    if n:
+        log(f"Mail-Review aufgeraeumt: {n} erledigte Eintraege entfernt.")
 
 
 def main():
     interval_minutes = 10
     log(f"Mail-Poller gestartet, API-Basis: {API_BASE}")
     cycle = 0
+    letzter_kalender = 0
     while True:
         try:
             # Seit Migration 004: Einstellungen > System hat Vorrang vor config.json
@@ -291,6 +493,19 @@ def main():
                         log(f"Automatisch archiviert: {n} erledigte Aufgabe(n).")
                 except Exception:
                     log("Auto-Archiv fehlgeschlagen:\n" + traceback.format_exc())
+            # Kalender (Umbau Schritt 11): alle 15 Minuten, unabhaengig vom Mail-Abruf
+            if time.time() - letzter_kalender >= 15 * 60:
+                letzter_kalender = time.time()
+                try:
+                    import kalender
+                    if kalender.eingerichtet():
+                        r = kalender.abgleich()
+                        if not r["ok"]:
+                            log(f"Kalender: {r['meldung']}")
+                        elif cycle % 12 == 0:
+                            log(f"Kalender: {r['anzahl']} Termine im Zeitfenster.")
+                except Exception:
+                    log("Kalender-Abgleich fehlgeschlagen:\n" + traceback.format_exc())
             if not mail_cfg["aktiv"]:
                 if cycle % 6 == 0:  # nicht bei jedem Zyklus loggen
                     log("Mail-Abruf ist ausgeschaltet (Einstellungen bzw. config.json) - warte.")
@@ -306,4 +521,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 2 and sys.argv[1] == "--nachholen":
+        # Von Hand: sudo -u crmapp python3 /opt/crm/mail_poller.py --nachholen 30
+        nachholen(core.load_secrets(), max(1, min(365, int(sys.argv[2]))))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--pruefen":
+        # Nur lesen: Anmeldung, Ordner, Anzahl neuer Mails. Meldet nichts ans CRM,
+        # schreibt keinen Zustand. Optional Pfad zu einer anderen mail.env.
+        sec = core.load_secrets()
+        if len(sys.argv) > 2:
+            sec = {}
+            for zeile in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+                zeile = zeile.strip()
+                if zeile and not zeile.startswith("#") and "=" in zeile:
+                    k, _, v = zeile.partition("=")
+                    sec[k.strip()] = v.strip()
+            STATE_FILE = Path(sys.argv[2]).parent / "poller_state.json"
+        poll_once(sec, nur_pruefen=True)
+    else:
+        main()
