@@ -1,17 +1,25 @@
 ---
 type: anleitung
 title: CRM – Auslieferung per Git auf den CPX12
-stand: 2026-09-25
+stand: 2026-11-03
 ---
 
 # Auslieferung per Git statt per Dateikopie
+
+> **Stand 03.11.2026:** Das Repository heißt jetzt `crm-code` (privat, ein
+> Erst-Commit ohne alte Historie). Der frühere Name `crm` gilt nicht mehr.
+> Der Server liefert bis zur Umstellung weiter per `scp` aus; dieses Dokument
+> beschreibt den Weg, sobald der Server auf Git wechselt. Das Repository
+> enthält keine Demo-Mandanten und keine Zugangsdaten. Die Demo-Daten
+> (`Demo-Deployment/vault/Kontakte`, `Opportunities`, `tasks.json`) liegen
+> nur lokal.
 
 Bisher wurde Code per `scp` auf den Server geschoben. Das hat drei Nachteile:
 Man sieht hinterher nicht, was tatsächlich draufliegt, eine Rücksicherung gibt
 es nicht, und die Dateirechte muss man jedes Mal von Hand nachziehen – daran
 ist das Postgres-Setup schon einmal hängengeblieben.
 
-Mit dem Repository `github.com/rl08154711/crm` wird daraus: Der Server holt
+Mit dem Repository `github.com/rl08154711/crm-code` wird daraus: Der Server holt
 sich den Stand selbst, und `git status` sagt jederzeit, ob jemand direkt am
 Live-System herumgeschraubt hat.
 
@@ -75,7 +83,7 @@ eingefügt – auch nicht in einen Chat.
 
 ### 3. Schlüssel bei GitHub eintragen
 
-Auf `github.com/rl08154711/crm` → **Settings** → **Deploy keys** →
+Auf `github.com/rl08154711/crm-code` → **Settings** → **Deploy keys** →
 **Add deploy key**. Titel etwa „CPX12", in das große Feld die eben
 ausgegebene Zeile. **Allow write access bleibt aus.** Speichern.
 
@@ -96,14 +104,14 @@ Probe:
 sudo -u crmapp ssh -T git@github.com
 ```
 
-Erwartet: „Hi rl08154711/crm! You've successfully authenticated, but GitHub
+Erwartet: „Hi rl08154711/crm-code! You've successfully authenticated, but GitHub
 does not provide shell access." Das ist der Erfolgsfall.
 
 ### 5. Klonen
 
 ```
 mkdir -p /opt/crm-repo && chown crmapp:crmapp /opt/crm-repo
-sudo -u crmapp git clone git@github.com:rl08154711/crm.git /opt/crm-repo
+sudo -u crmapp git clone git@github.com:rl08154711/crm-code.git /opt/crm-repo
 ```
 
 ### 6. Zugangsdaten einmalig ablegen
