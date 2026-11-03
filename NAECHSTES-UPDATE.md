@@ -294,3 +294,21 @@ Getestet in der Sandbox gegen `crm_test` mit Migrationen 002–023: `smoke_test.
 `test_kundenwissen_acos.py` 11/11 grün.
 
 **Ab jetzt gilt:** Entwickelt und ausgeliefert wird aus `crm-code-upload`. `~/crm-umbau` ist Archiv.
+
+## Backup-Skript ins Repository (03.11.2026)
+
+`CPX12-Postgres/crm-backup.sh` ist die Kopie von `/usr/local/bin/crm-backup.sh` (sha1 `2523ce7f…`),
+gestartet von `crm-backup.timer` täglich 22:30. Ablauf: `pg_dump` der Datenbank `crm`, Lesbarkeit
+prüfen, mit GPG (AES256) verschlüsseln, in die Nextcloud laden – je Wochentag eine Datei, die sich
+wöchentlich überschreibt, am Monatsersten zusätzlich eine Monatsdatei. Lokal unverschlüsselt
+14 Tage unter `/var/backups/crm`.
+
+Im Skript stehen keine Zugangsdaten. Die liegen nur auf dem Server und gehören nicht ins Repository:
+- `/root/.crm-backup.pass` – Passphrase für die Verschlüsselung
+- `/root/.crm-backup.netrc` – Nextcloud-Zugang
+
+**Wichtig:** Ohne die Passphrase sind die Sicherungen in der Nextcloud wertlos. Fällt der Server
+aus, ist sie mit ihm weg. Sie muss deshalb zusätzlich außerhalb des Servers liegen, z. B. im
+Passwortmanager.
+
+Ausrollen ist nicht nötig, das Skript läuft unverändert.
