@@ -1,0 +1,14 @@
+[Unit]
+Description=CRM Wissens-Abgleich DK-Wissen (wissen_sync.py)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=crmapp
+Group=crmapp
+WorkingDirectory=/opt/crm
+ExecStart=/usr/bin/python3 /opt/crm/wissen_sync.py timer
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

@@ -1,0 +1,23 @@
+# systemd-Service für den CRM-Demo-Dashboard-Server
+# Installieren:  sudo cp crm-demo.service /etc/systemd/system/
+#                sudo systemctl daemon-reload
+#                sudo systemctl enable --now crm-demo.service
+[Unit]
+Description=CRM Demo Dashboard (digitalkonzepte.biz)
+After=network.target
+
+[Service]
+Type=simple
+User=crmdemo
+Group=crmdemo
+WorkingDirectory=/opt/crm-demo
+ExecStart=/usr/bin/python3 /opt/crm-demo/crm_server.py
+Restart=always
+RestartSec=2
+# Härtung: Prozess darf nur im eigenen App-Verzeichnis schreiben
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/crm-demo
+
+[Install]
+WantedBy=multi-user.target

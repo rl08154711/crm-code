@@ -1,0 +1,32 @@
+{
+  "instance": "digitalkonzepte-intern",
+  "_hinweis": "Konfigurationsschicht pro Instanz (Konzept Abschnitt 2.3). Enthaelt keine Geheimnisse - Zugangsdaten liegen in secrets/mail.env (chmod 600, nicht im Git/Backup-Klartext).",
+
+  "design": {
+    "_hinweis": "Platzhalter fuer spaetere Design-Anpassungen pro Kundeninstanz (Farben, Spalten, Layout). Noch nicht befuellt, da fuer die interne Instanz nicht benoetigt.",
+    "primary_color": null,
+    "logo_path": null
+  },
+
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-5",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "_hinweis": "api_key_env verweist auf die Umgebungsvariable, die aus secrets/mail.env geladen wird - der Schluessel selbst steht nicht hier."
+  },
+
+  "mail": {
+    "enabled": true,
+    "_hinweis": "mail.env ist ausgefuellt (2026-08-04) - Anbindung aktiv, sobald diese Config + secrets/mail.env auf dem Server liegen und crm-mailpoll laeuft.",
+    "poll_interval_minutes": 10,
+    "credentials_file": "secrets/mail.env",
+    "raw_mail_retention_days": 90,
+    "auto_task_creation": false,
+    "_stufe": "Stufe 1 (Konzept 1.8): nur Vorschlaege in der Review-Warteschlange, keine automatische Aufgaben-Erstellung."
+  },
+
+  "backup": {
+    "target": "nextcloud",
+    "_hinweis": "Folgt dem bestehenden Nextcloud-Backup-Muster, Ziel-Pfad wird beim Produktiv-Rollout pro Instanz gesetzt."
+  }
+}

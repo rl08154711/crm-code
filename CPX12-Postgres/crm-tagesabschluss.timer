@@ -1,0 +1,10 @@
+[Unit]
+Description=CRM Tagesabschluss abends, Nachholer morgens
+
+[Timer]
+OnCalendar=*-*-* 23:40:00 Europe/Berlin
+OnCalendar=*-*-* 06:30:00 Europe/Berlin
+Persistent=true
+
+[Install]
+WantedBy=timers.target

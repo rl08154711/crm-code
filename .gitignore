@@ -1,0 +1,62 @@
+# ─── Zugangsdaten: niemals ins Repository ───────────────────────────
+secrets/
+*.env
+mail.env
+
+# ─── Mandantendaten: gehören nicht in die Versionsverwaltung ────────
+# Anker (/) = nur im Hauptverzeichnis, damit die erfundenen
+# Demo-Daten unter CGI-Demo-AllInkl/ und Demo-Deployment/ bleiben.
+/Kontakte/
+/Opportunities/
+/Aktivitäten/
+/Angebote/
+/Datenbank/
+/Clippings/
+/Templates/
+/Dashboard/
+/tasks.json
+/tasks.md
+/Dashboard.html
+CPX12-Generalprobe/Kontakte/
+CPX12-Generalprobe/Opportunities/
+CPX12-Generalprobe/tasks.json
+CPX12-Postgres/Kontakte/
+CPX12-Postgres/Opportunities/
+CPX12-Postgres/tasks.json
+
+# ─── Technisches ────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.DS_Store
+.obsidian/
+*.log
+*.zip
+
+# ─── Zusätzliche Sicherungen (03.11.2026) ───────────────────────────
+# Demo-Mandanten (fiktiv, aber Daten statt Code): nicht im Repository
+Demo-Deployment/vault/Kontakte/
+Demo-Deployment/vault/Opportunities/
+Demo-Deployment/vault/tasks.json
+CGI-Demo-AllInkl/
+# Datenbank-Dumps und Sicherungen
+*.dump
+*.sql.gz
+*.sql.bak
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
+backup/
+backups/
+# Schlüssel und Zertifikate
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+# Berichte und Exporte aus dem Betrieb
+/reports/
+*.csv
+*.xlsx

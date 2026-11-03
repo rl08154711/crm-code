@@ -1,0 +1,18 @@
+{
+	# Generalprobe: jetzt mit echtem Domainnamen (crm-test.ubrl.de) statt der
+	# nackten IP - Caddy holt sich dafuer automatisch ein echtes
+	# Let's-Encrypt-Zertifikat, keine Browser-Warnung mehr, kein "tls
+	# internal" noetig. Voraussetzung: ein A-Record fuer "crm-test" bei
+	# ubrl.de zeigt auf 46.225.13.130 UND ist bereits propagiert, bevor
+	# Caddy neu startet - sonst schlaegt die Let's-Encrypt-Anfrage fehl
+	# (Caddy versucht es danach automatisch weiter, kein manueller Rebuild
+	# noetig, sobald DNS steht).
+}
+
+crm-test.ubrl.de {
+	# Basic-Auth entfaellt bewusst: Der App-seitige Login (eigene
+	# Login-Seite, Session-Cookie, Logout-Button) uebernimmt das jetzt in
+	# crm_serve.py/crm_core.py - siehe Mail-Anbindung-Status.md.
+
+	reverse_proxy 127.0.0.1:8080
+}

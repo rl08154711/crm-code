@@ -1,0 +1,14 @@
+# Setzt die Demo-Daten alle 4 Stunden zurück (00,04,08,12,16,20 Uhr),
+# damit Interessenten frei herumklicken können, ohne dass die Demo "kaputt" bleibt.
+# Installieren:  sudo cp crm-demo-reset.timer /etc/systemd/system/
+#                sudo systemctl daemon-reload
+#                sudo systemctl enable --now crm-demo-reset.timer
+[Unit]
+Description=Timer: CRM-Demo periodisch zurücksetzen
+
+[Timer]
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

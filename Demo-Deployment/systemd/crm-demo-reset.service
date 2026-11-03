@@ -1,0 +1,10 @@
+# Einmaliger Reset-Lauf, wird vom Timer (crm-demo-reset.timer) ausgelöst.
+# Installieren:  sudo cp crm-demo-reset.service /etc/systemd/system/
+[Unit]
+Description=CRM Demo – Daten auf Ausgangsstand zurücksetzen
+
+[Service]
+Type=oneshot
+User=crmdemo
+Group=crmdemo
+ExecStart=/opt/crm-demo/reset_demo.sh

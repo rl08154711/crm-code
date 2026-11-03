@@ -1,0 +1,13 @@
+[Unit]
+Description=CRM Abgleich mit ACOS (acos_sync.py)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=crmapp
+Group=crmapp
+WorkingDirectory=/opt/crm
+ExecStart=/usr/bin/python3 /opt/crm/acos_sync.py timer
+Nice=10
+TimeoutStartSec=30min

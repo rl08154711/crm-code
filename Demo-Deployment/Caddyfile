@@ -1,0 +1,21 @@
+# Caddy-Konfiguration für die CRM-Demo.
+# Installieren: Inhalt an /etc/caddy/Caddyfile anhängen (oder Datei ersetzen),
+# dann: sudo systemctl reload caddy
+#
+# WICHTIG: Passwort-Hash unten mit deinem eigenen ersetzen! Erzeugen mit:
+#   caddy hash-password --plaintext 'DEIN-DEMO-PASSWORT'
+
+demo.digitalkonzepte.biz {
+    basic_auth {
+        # Benutzername: demo   /  Passwort: siehe Anleitung
+        demo $2a$14$ERSETZE.DIESEN.HASH.MIT.DEM.AUSGABEWERT.VON.caddy.hash-password
+    }
+
+    reverse_proxy 127.0.0.1:8765
+
+    encode gzip
+
+    log {
+        output file /var/log/caddy/crm-demo.log
+    }
+}
