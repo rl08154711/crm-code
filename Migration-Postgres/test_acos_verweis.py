@@ -32,6 +32,7 @@ WISSEN = [
     {"id": "v-doc-1", "kind": "document", "title": "Testplan v2.docx", "updated_at": "2026-11-03T10:00:00Z"},
     {"id": "v-doc-2", "kind": "document", "title": "Testplan v3.docx", "updated_at": "2026-11-03T11:00:00Z"},
     {"id": "v-doc-3", "kind": "document", "title": "Selbst gesendet.pdf", "updated_at": "2026-11-02T09:00:00Z"},
+    {"id": "v-doc-4", "kind": "document", "title": "Im Ordner.PDF", "updated_at": "2026-11-03T09:00:00Z"},
     {"id": "v-rep-1", "kind": "report", "title": "Testbericht", "updated_at": "2026-11-03T12:00:00Z"},
 ]
 
@@ -78,12 +79,17 @@ try:
     core._x("""INSERT INTO acos_uploads (firma_id, pfad, acos_client_id, status, acos_document_id, gesendet_am)
                VALUES (%s,'Unterlagen/Selbst gesendet.pdf',%s,'gesendet','v-doc-3',now())""", (fid, CID))
 
+    # Datei liegt schon im Kundenordner (Variante A)
+    core._x("""INSERT INTO ablage_datei (datei_id, pfad, firma_id) VALUES ('t-ad-1', %s, %s)""",
+            (FIRMA + "/Unterlagen/im ordner.pdf", fid))
+
     pruef("Abgleich laeuft ohne Fehler", acos_sync.abgleich("test") is True)
     st = {r["acos_id"]: r for r in core._q("SELECT acos_id, status, meldung FROM acos_artefakte WHERE firma_id=%s", (fid,))}
     pruef("Altbestand-Dokument: verweis statt neu", st["v-doc-1"]["status"] == "verweis")
     pruef("Neues Dokument: verweis statt neu", st["v-doc-2"]["status"] == "verweis")
     pruef("Verweis mit Hinweistext", "bleibt in ACOS" in (st["v-doc-2"]["meldung"] or ""))
     pruef("Selbst gesendetes Dokument bleibt abgelegt", st["v-doc-3"]["status"] == "abgelegt")
+    pruef("Dokument mit gleichnamiger Datei im Kundenordner: in Nextcloud", st["v-doc-4"]["status"] == "abgelegt")
     pruef("Bericht weiterhin in der Nextcloud abgelegt", st["v-rep-1"]["status"] == "abgelegt")
     pruef("Keine Dokument-Datei in die Nextcloud geschrieben",
           len(MockAblage.dateien_angelegt) == 1 and "Testbericht" in MockAblage.dateien_angelegt[0])
@@ -109,6 +115,7 @@ try:
     pruef("Oberflaeche: Etikett 'nur in ACOS'", "verweis: ['nur in ACOS'" in core.ACOS_JS)
 finally:
     core._x("DELETE FROM acos_uploads WHERE firma_id=%s", (fid,))
+    core._x("DELETE FROM ablage_datei WHERE datei_id LIKE 't-ad-%%'")
     core._x("DELETE FROM firmen WHERE id=%s", (fid,))
     core._x("UPDATE firmen SET acos_fuehren=true WHERE id = ANY(%s)", ([r["id"] for r in andere] or [0],))
 print(f"\n{ok} von {ok} Pruefungen gruen.")

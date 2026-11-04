@@ -736,6 +736,8 @@ def abgleich(ausgeloest_von="timer"):
                     core._x("""UPDATE acos_artefakte SET status='verweis', meldung='Datei bleibt in ACOS – im Kundenwissen als Verweis'
                                WHERE id = ANY(%s)""", ([a["id"] for a in dokumente],))
                     offen = [a for a in offen if a not in dokumente]
+                    # liegt die Datei schon im Kundenordner, gleich "in Nextcloud" (Variante A, 04.11.2026)
+                    core.acos_verweise_mit_ablage(fid)
                 meldung_firma = None
                 if offen:
                     if ablage is None:

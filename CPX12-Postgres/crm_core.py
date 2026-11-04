@@ -6370,6 +6370,33 @@ def kunden_ablage_basis():
         pfad = ""
     return (pfad or "Arbeitsdateien/Kunden").strip("/")
 
+def acos_verweise_mit_ablage(firma_id=None):
+    """ACOS-Dokumente "nur in ACOS" (status verweis) auf "in Nextcloud" setzen, sobald eine
+    gleichnamige Datei im Kundenordner derselben Firma liegt (ablage_datei, stuendlicher
+    Wissens-Abgleich). Vergleich ohne Gross-/Kleinschreibung; hat der ACOS-Titel keine
+    Dateiendung, zaehlt der Dateiname ohne Endung. Das Original bleibt, wo es ist.
+    Rueckgabe: Anzahl umgestellter Dokumente. (2026-11-04, Variante A)"""
+    if not (_tabelle_da("ablage_datei") and _tabelle_da("acos_artefakte")):
+        return 0
+    bed, args = "", [kunden_ablage_basis()]
+    if firma_id is not None:
+        bed, args = " AND a2.firma_id=%s", args + [int(firma_id)]
+    rows = _x(f"""UPDATE acos_artefakte a
+                  SET status='abgelegt', meldung=NULL, abgelegt_am=coalesce(a.abgelegt_am, now()),
+                      nextcloud_pfad = %s || '/' || t.pfad
+                  FROM (SELECT DISTINCT ON (a2.id) a2.id AS aid, ad.pfad
+                        FROM acos_artefakte a2
+                        JOIN ablage_datei ad ON ad.firma_id = a2.firma_id AND NOT ad.entfernt
+                        WHERE a2.art = 'document' AND a2.status = 'verweis' AND btrim(a2.titel) <> ''{bed}
+                          AND (lower(split_part(ad.pfad, '/', -1)) = lower(btrim(a2.titel))
+                               OR (btrim(a2.titel) !~ '[.][A-Za-z0-9]{{1,5}}$'
+                                   AND lower(regexp_replace(split_part(ad.pfad, '/', -1), '[.][^.]*$', ''))
+                                       = lower(btrim(a2.titel))))
+                        ORDER BY a2.id, ad.geaendert_am DESC NULLS LAST) t
+                  WHERE a.id = t.aid
+                  RETURNING a.id""", args)
+    return len(rows)
+
 def kunden_ordner(firma_name, unterordner=""):
     """Relativer Ablagepfad eines Unternehmens: <Basis>/<Firmenname>[/<unterordner>]."""
     teile = [kunden_ablage_basis(), firma_name.strip()]

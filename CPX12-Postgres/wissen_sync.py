@@ -615,6 +615,12 @@ def abgleich(ausgeloest_von="timer"):
         except Exception as e:
             kunden["dokumente"] = {"meldung": f"{e.__class__.__name__}: {e}"[:300]}
             log("Dokumente ins Journal fehlgeschlagen:\n" + traceback.format_exc())
+        try:
+            # ACOS-Dokumente, die jetzt auch im Kundenordner liegen -> "in Nextcloud" (04.11.2026)
+            kunden["acos_verweise_abgelegt"] = core.acos_verweise_mit_ablage()
+        except Exception as e:
+            kunden["acos_verweise_abgelegt"] = f"{e.__class__.__name__}: {e}"[:300]
+            log("ACOS-Verweise abgleichen fehlgeschlagen:\n" + traceback.format_exc())
         core._x("UPDATE wissen_laeufe SET kunden=%s::jsonb WHERE id=%s",
                 (core.json.dumps(kunden, ensure_ascii=False, default=str), lauf))
         log(f"Kundenwissen: {kunden}")
