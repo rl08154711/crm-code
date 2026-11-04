@@ -731,8 +731,9 @@ def abgleich(ausgeloest_von="timer"):
                 if dokumente:
                     # Hochgeladene Dateien (kind=document) bleiben in ACOS. Das CRM fuehrt sie nur
                     # als Verweis im Kundenwissen (Titel, Datum, Link), laedt sie nicht herunter
-                    # (Variante 2, 03.11.2026).
-                    core._x("""UPDATE acos_artefakte SET meldung='Datei bleibt in ACOS – im Kundenwissen als Verweis'
+                    # (Variante 2, 03.11.2026). Status 'verweis' statt 'neu', sonst zeigt die
+                    # Oberflaeche dauerhaft "wartet auf Ablage" (Migration 024, 04.11.2026).
+                    core._x("""UPDATE acos_artefakte SET status='verweis', meldung='Datei bleibt in ACOS – im Kundenwissen als Verweis'
                                WHERE id = ANY(%s)""", ([a["id"] for a in dokumente],))
                     offen = [a for a in offen if a not in dokumente]
                 meldung_firma = None

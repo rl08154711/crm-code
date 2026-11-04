@@ -947,7 +947,8 @@ function jeAktionAusfuehren(typ){
 ACOS_JS = r"""
 // ── ACOS-BEREICH AM UNTERNEHMEN (2026-10-20, Migration 006) ─────────
 const ACOS_STATUS = { neu: ['wartet auf Ablage', '#9ca3af'], abgelegt: ['in Nextcloud', '#16a34a'],
-                      fehler: ['Fehler', '#dc2626'], entfernt: ['in ACOS entfernt', '#6b7280'] };
+                      fehler: ['Fehler', '#dc2626'], entfernt: ['in ACOS entfernt', '#6b7280'],
+                      verweis: ['nur in ACOS', '#2563eb'] };
 function _aE(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function _aDate(iso){ if(!iso) return ''; const [y,m,d] = iso.slice(0,10).split('-'); return `${d}.${m}.${y}`; }
 function acosSchalterGeaendert(){
