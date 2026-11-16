@@ -2755,6 +2755,22 @@ def deadline_cell(dl):
     if days <= 7: return f'<span style="color:#f59e0b">{label}</span>'
     return f'<span style="color:#6b7280">{label}</span>'
 
+def _fx_kontakt_stufe(d):
+    """Letzter Kontakt als Stufe fuer die Schnellauswahl: w (bis 30 Tage), m (31-90), r (aelter), nie."""
+    try:
+        tage = (date.today() - date.fromisoformat(str(d or "")[:10])).days
+    except ValueError:
+        return "nie"
+    return "w" if tage <= 30 else "m" if tage <= 90 else "r"
+
+def _fx_buchstabe(name):
+    """Anfangsbuchstabe fuer die A-Z-Leiste; Umlaute zum Grundbuchstaben, Ziffern und Sonstiges als #."""
+    for ch in (name or "").strip().upper():
+        if ch.isalnum():
+            ch = {"Ä": "A", "Ö": "O", "Ü": "U"}.get(ch, ch)
+            return ch if "A" <= ch <= "Z" else "#"
+    return "#"
+
 def _h(v):
     """HTML-Escaping fuer Werte in Attributen (Journal-Datalists)."""
     import html as _html
@@ -2820,6 +2836,7 @@ def build_dashboard():
     for c in contacts:
         firma_groups.setdefault(c["firma"], []).append(c)
     contact_rows = ""
+    offene_firmen = {(t.get("contact") or "").strip().lower() for t in active_tasks if t.get("contact")}
     for gi, (firma, grp) in enumerate(sorted(firma_groups.items())):
         c = grp[0]
         cid = c["id"].replace("'", "\\'")
@@ -2830,7 +2847,15 @@ def build_dashboard():
         ort = (c.get("address") or "").split(",")[-1].strip()
         firma_esc = c['firma'].replace("'", "\\'").replace('"', '&quot;')
         nxt = c.get("next_action") or ""
-        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" data-art="{_h(c['art'])}" class="c-zeile" tabindex="0" role="button"
+        ort_name = re.sub(r"^\d{4,5}\s*", "", ort)
+        fx = {"art": [c["art"]] if c.get("art") else [],
+              "st": list(dict.fromkeys(x.strip().lower() for x in (c.get("status") or "").split(",") if x.strip())),
+              "br": [c["branch"].strip()] if (c.get("branch") or "").strip() else [],
+              "ort": [ort_name] if ort_name else [],
+              "kt": [_fx_kontakt_stufe(c.get("last_contact"))],
+              "mk": (["acos"] if c.get("acos_fuehren") else []) + (["auf"] if c["firma"].strip().lower() in offene_firmen else []),
+              "az": _fx_buchstabe(c["firma"])}
+        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" data-art="{_h(c['art'])}" data-fx="{_h(json.dumps(fx, ensure_ascii=False))}" class="c-zeile" tabindex="0" role="button"
               aria-label="Akte {_h(c['firma'])} öffnen" onclick="openAkte('{cid}')" onkeydown="if(event.key==='Enter'||event.key===' '){{event.preventDefault();openAkte('{cid}')}}">
           <td><strong>{_h(c['firma'])}</strong>{'<span class="acos-badge" title="Wird in ACOS geführt">ACOS</span>' if c.get('acos_fuehren') else ''}{f'<small class="c-ort"> · {_h(ort)}</small>' if ort else ''}{person_line}</td>
           <td>{_beziehung_html(c)}</td>
@@ -2843,6 +2868,7 @@ def build_dashboard():
 
     # ── PERSONEN TABLE (2026-08-21) ──
     person_rows = ""
+    art_je_firma = {str(c["id"]): c.get("art") for c in contacts}
     for p in sorted(persons, key=lambda x: (x["firma"], x["name"])):
         pid = p["id"].replace("'", "\\'")
         fid = p["firma_id"].replace("'", "\\'")
@@ -2853,7 +2879,14 @@ def build_dashboard():
             f' · <a href="{p["linkedin"]}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text2)">LinkedIn</a>' if p.get("linkedin") else "",
         ])
         firma_esc = p["firma"].replace("'", "\\'").replace('"', '&quot;')
-        person_rows += f"""<tr data-person="{pid}" data-person-name="{p['name'].replace('"','&quot;')}" tabindex="0" onclick="openPersonAkte('{pid}')" onkeydown="if(event.key==='Enter'){{openPersonAkte('{pid}')}}">
+        p_art = art_je_firma.get(str(p.get("firma_id")))
+        p_fx = {"art": [p_art] if p_art else [],
+                "st": list(dict.fromkeys(x.strip().lower() for x in (p.get("status") or "").split(",") if x.strip())),
+                "kp": [p["kampagne"].strip()] if (p.get("kampagne") or "").strip() else [],
+                "fi": [p["firma"]] if p.get("firma") else [],
+                "kt": [_fx_kontakt_stufe(p.get("last_contact"))],
+                "az": _fx_buchstabe((p.get("name") or "").split()[-1] if (p.get("name") or "").split() else "")}
+        person_rows += f"""<tr data-person="{pid}" data-person-name="{p['name'].replace('"','&quot;')}" data-fx="{_h(json.dumps(p_fx, ensure_ascii=False))}" tabindex="0" onclick="openPersonAkte('{pid}')" onkeydown="if(event.key==='Enter'){{openPersonAkte('{pid}')}}">
           <td><strong>{p['name']}</strong>{f'<br><small style="color:var(--text2)">{p["titel"]}</small>' if p.get('titel') and not p['titel'].startswith('-') else ''}</td>
           <td><a class="contact-link" href="#" onclick="event.stopPropagation();openContactByName('{firma_esc}')">{p['firma']}</a></td>
           <td>{p.get('kampagne','') or '<span style="color:#9ca3af">–</span>'}</td>
@@ -3095,6 +3128,31 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .kpi-label{{display:block;font-size:.68rem;color:var(--text2)}}
 .toolbar{{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}}
 .filter-bar{{display:flex;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap}}
+.fx-sichten{{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:.6rem}}
+.fx-lb{{font-size:.72rem;color:var(--text2);min-width:104px;padding-top:4px}}
+.fx-grp{{display:flex;align-items:flex-start;gap:8px;margin-bottom:4px}}
+.fx-chips{{display:flex;flex-wrap:wrap;gap:5px;flex:1}}
+.fx-chip{{font:inherit;font-size:.78rem;padding:3px 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text2);cursor:pointer}}
+.fx-chip span{{font-size:.7rem;opacity:.75;margin-left:2px}}
+.fx-chip:hover{{border-color:var(--accent)}}
+.fx-chip.on{{background:#eef2ff;border-color:var(--accent);color:var(--accent)}}
+.fx-chip.leer{{opacity:.45}}
+.fx-neu{{border-style:dashed}}
+.fx-sicht{{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:.78rem}}
+.fx-sicht button{{font:inherit;background:none;border:0;cursor:pointer;color:var(--text2);padding:3px 4px 3px 10px}}
+.fx-sicht .fx-x{{padding:3px 8px 3px 2px;opacity:.5}}
+.fx-sicht .fx-x:hover{{opacity:1;color:#b91c1c}}
+.fx-sicht.on{{background:#eef2ff;border-color:var(--accent)}}
+.fx-sicht.on button{{color:var(--accent)}}
+.fx-az{{display:flex;flex-wrap:wrap;gap:2px;margin:.5rem 0 .4rem}}
+.fx-az button{{font:inherit;font-size:.72rem;min-width:22px;padding:3px 0;border:0;border-radius:4px;background:none;color:var(--text2);cursor:pointer}}
+.fx-az button:hover:not(:disabled){{background:var(--surface2)}}
+.fx-az button.on{{background:#eef2ff;color:var(--accent)}}
+.fx-az button:disabled{{opacity:.3;cursor:default}}
+.fx-fuss{{display:flex;justify-content:space-between;align-items:center;font-size:.78rem;color:var(--text2);margin-bottom:.4rem}}
+.fx-lnk{{font:inherit;font-size:.78rem;background:none;border:0;color:var(--accent);cursor:pointer;padding:3px 4px}}
+tr.fx-aus{{display:none}}
+@media (max-width:700px){{.fx-grp{{flex-direction:column;gap:2px}}.fx-lb{{min-width:0}}}}
 .search-input,.filter-select{{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:.38rem .7rem;border-radius:6px;font-size:.8rem;outline:none}}
 .search-input{{flex:1;min-width:180px}}
 .search-input:focus,.filter-select:focus{{border-color:var(--accent)}}
@@ -3484,6 +3542,7 @@ a.kw-ext{{text-decoration:none}} .kw-ohnelink{{cursor:default}}
 .mr-auf-felder input{{padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;font:inherit;font-size:.86rem}}
 .mr-aktionen{{display:flex;align-items:center;gap:8px;padding:12px 16px;flex-wrap:wrap}}
 .mr-platz{{flex:1 1 auto}}
+.mr-aktionen .btn:disabled{{opacity:.45;cursor:not-allowed}}
 .mr-ign{{padding:0 16px 12px;font-size:.78rem;color:var(--text2)}}
 .mr-fertig{{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f0fdf4;color:#166534;font-size:.88rem}}
 .mr-fertig span{{flex:1 1 auto}}
@@ -3818,7 +3877,7 @@ tr.st-hidden{{display:none !important}}
     </div>
   </div>
   <div class="filter-bar">
-    <input class="search-input" placeholder="Suchen..." oninput="filterTable('t-tbl',this.value)">
+    <input class="search-input" type="search" autocomplete="off" placeholder="Suchen..." oninput="filterTable('t-tbl',this.value)">
     <select class="filter-select" onchange="filterByCol('t-tbl',5,this.value)">
       <option value="">Alle Status</option>
       <option>Offen</option><option>In Bearbeitung</option><option>Blockiert</option><option>Verschoben</option>
@@ -3848,16 +3907,11 @@ tr.st-hidden{{display:none !important}}
       <button class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
     </div>
   </div>
+  <div class="fx-sichten" id="fx-sichten-c-tbl"></div>
   <div class="filter-bar">
-    <input class="search-input" placeholder="Suchen..." oninput="filterTable('c-tbl',this.value)">
-    <select class="filter-select" onchange="filterArt('c-tbl',this.value)" aria-label="Beziehung filtern">
-      <option value="">Alle Beziehungen</option><option value="mandant">Mandanten</option><option value="netzwerk">Netzwerk</option><option value="lieferant">Lieferanten</option><option value="intern">Eigenes Unternehmen</option>
-    </select>
-    <select class="filter-select" onchange="filterByCol('c-tbl',1,this.value)">
-      <option value="">Alle Status</option>
-      <option>lead</option><option>interessent</option><option>kunde</option><option>netzwerk</option><option>partner</option><option>dienstleister</option><option>aktiv</option><option>inaktiv</option><option>intern</option>
-    </select>
+    <input class="search-input" id="fx-q-c-tbl" type="search" autocomplete="off" placeholder="Name, Person, Ort oder Branche" oninput="fxSuche('c-tbl',this.value)">
   </div>
+  <div class="fx" id="fx-c-tbl"></div>
   <div style="overflow-y:auto;max-height:60vh;border:1px solid var(--border);border-radius:8px">
   <table id="c-tbl">
     <thead><tr><th>Firma / Personen</th><th>Beziehung</th><th>Branche</th><th>Letzter Kontakt</th><th>Nächster Schritt</th></tr></thead>
@@ -3878,13 +3932,11 @@ tr.st-hidden{{display:none !important}}
       </div>
     </div>
   </div>
+  <div class="fx-sichten" id="fx-sichten-per-tbl"></div>
   <div class="filter-bar">
-    <input class="search-input" placeholder="Suchen..." oninput="filterTable('per-tbl',this.value)">
-    <select class="filter-select" onchange="filterByCol('per-tbl',2,this.value)">
-      <option value="">Alle Kampagnen</option>
-      {kampagne_options}
-    </select>
+    <input class="search-input" id="fx-q-per-tbl" type="search" autocomplete="off" placeholder="Name, Unternehmen, Mail oder Telefon" oninput="fxSuche('per-tbl',this.value)">
   </div>
+  <div class="fx" id="fx-per-tbl"></div>
   <p style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">Klick auf eine Zeile öffnet die Akte der Person mit Kontaktdaten, Projekten und Journal.</p>
   <table id="per-tbl">
     <thead><tr><th>Name</th><th>Unternehmen</th><th>Kampagne</th><th>Status</th><th>Letzter Kontakt / Daten</th></tr></thead>
@@ -3917,7 +3969,7 @@ tr.st-hidden{{display:none !important}}
   <div id="pb-liste">
   <p style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">Gruppiert nach Kunde – Klick auf eine Zeile klappt Projekte und zugehörige Aufgaben auf.</p>
   <div class="filter-bar" style="flex-wrap:wrap">
-    <input class="search-input" placeholder="Suchen..." oninput="filterTable('o-tbl',this.value)">
+    <input class="search-input" type="search" autocomplete="off" placeholder="Suchen..." oninput="filterTable('o-tbl',this.value)">
     <div id="o-status-filter" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
       <span style="font-size:.75rem;color:var(--text2)">Phase:</span>
       <button type="button" class="status-pill" data-val="anbahnung" onclick="toggleProjektStatus(this)">Anbahnung</button>
@@ -4049,6 +4101,9 @@ tr.st-hidden{{display:none !important}}
 
     <section class="set-card">
       <h3>Passwort ändern</h3>
+      <!-- Benutzername fuer Passwort-Manager (16.11.2026): ohne dieses Feld nehmen Safari und
+           Passwort-Manager das naechstbeste Textfeld der Seite - die Suche - als Benutzernamen. -->
+      <input type="text" id="set-pw-user" name="username" autocomplete="username" tabindex="-1" aria-hidden="true" style="display:none">
       <label class="set-row">Bisheriges Passwort<input type="password" id="set-pw-alt" autocomplete="current-password"></label>
       <label class="set-row">Neues Passwort <span class="j-opt">(mind. 10 Zeichen)</span><input type="password" id="set-pw-neu" autocomplete="new-password"></label>
       <label class="set-row">Neues Passwort wiederholen<input type="password" id="set-pw-neu2" autocomplete="new-password"></label>
@@ -4410,6 +4465,20 @@ tr.st-hidden{{display:none !important}}
 
 <script>
 const CRM_USER = {crm_user_json};
+// Suchfelder nie automatisch ausfuellen lassen (16.11.2026): Safari bzw. Passwort-Manager
+// trugen beim Klick in die Unternehmensliste den Benutzernamen ins Suchfeld ein.
+function _keinAutofill(el){{
+  if(!el || el.dataset.kaf) return;
+  el.dataset.kaf = '1';
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('data-1p-ignore', ''); el.setAttribute('data-lpignore', 'true');
+  el.setAttribute('data-bwignore', ''); el.setAttribute('data-form-type', 'other');
+  if(!el.name) el.name = 'crm-suche-' + (el.id || Math.random().toString(36).slice(2));
+}}
+const _SUCHFELD = 'input[type=search]:not([list]),input.search-input:not([list]),input.search:not([list])';
+document.querySelectorAll(_SUCHFELD).forEach(_keinAutofill);
+document.addEventListener('focusin', e => {{ if(e.target.matches && e.target.matches(_SUCHFELD)) _keinAutofill(e.target); }}, true);
+(function(){{ const u = document.getElementById('set-pw-user'); if(u) u.value = CRM_USER.name || ''; }})();
 // ── CRM Data (embedded) ──────────────────────────────────────────────
 const CRM_CONTACTS = {contacts_json};
 const CRM_TASKS    = {tasks_json};
@@ -4426,7 +4495,7 @@ function openContactByName(name) {{
     // Nicht gefunden → Kontakte-Tab öffnen und filtern
     showPanel('contacts');
     const inp = document.querySelector('#c-tbl').closest('.panel').querySelector('.search-input');
-    if (inp) {{ inp.value = name; filterTable('c-tbl', name); }}
+    if (inp) {{ inp.value = name; fxSuche('c-tbl', name); }}
   }}
 }}
 
@@ -4552,8 +4621,7 @@ function mrDetail(){{
                                       : (m.hinweis || 'zugeordnet');
     h += `<div class="mr-block"><h3>Zuordnung</h3>
       <div class="mr-zuo"><button type="button" class="mr-firma" onclick="openContactByName('${{_mrE(m.firma)}}')">${{_mrE(m.firma)}}</button>
-        <span class="mr-grau">${{_mrE(grund)}}</span>
-        ${{aus ? '' : `<button type="button" class="mr-lnk" onclick="openMailAssign('${{it.id}}')">${{m.type === 'person' ? 'Ändern' : 'Person anlegen / ändern'}}</button>`}}</div>
+        <span class="mr-grau">${{_mrE(grund)}}</span></div>
       ${{extra.map((f,i)=>`<label class="mr-tgl mr-weitere"><input type="checkbox" class="mr-firma-x" data-firma="${{_mrE(f.firma)}}" ${{f.vorhaken === false ? '' : 'checked'}} onchange="mrFirmenWahl()"> <strong>${{_mrE(f.firma)}}</strong> <span class="mr-grau">${{_mrE(f.grund)}}</span></label>`).join('')}}
       <label class="mr-tgl"><input type="checkbox" id="mr-journal" checked> ${{extra.length ? 'Als E-Mail ins Journal der angehakten Unternehmen' : 'Als E-Mail ins Journal von ' + _mrE(m.firma)}}</label>
       ${{it.lead ? `<p class="mr-grau">Terminbuchung über ${{_mrE(it.lead.quelle)}}${{it.lead.termin ? ': ' + _mrE(_fmtDate(it.lead.termin)) + (it.lead.uhrzeit ? ' ' + _mrE(it.lead.uhrzeit) : '') : ''}}${{it.lead.info ? ' · ' + _mrE(it.lead.info) : ''}}</p>` : ''}}</div>`;
@@ -4571,11 +4639,10 @@ function mrDetail(){{
     h += `<div class="mr-block"><h3>Kein Kundenbezug erkannt</h3>
       <p>Der Absender ist kein Kontakt, und die Mail hat einen Abmeldelink. Sieht nach Newsletter aus.</p>
       <label class="mr-tgl"><input type="checkbox" id="mr-nl-ignore" checked> Mails von diesem Absender künftig nicht mehr im Review zeigen</label>
-      <button type="button" class="mr-lnk" onclick="openMailAssign('${{it.id}}')">Ist doch ein Kontakt? Zuordnen</button></div>`;
+      <p class="mr-grau">Ist doch ein Kontakt? Unten „Zuordnen / ändern“.</p></div>`;
   }} else {{
     h += `<div class="mr-block"><h3>Absender unbekannt</h3>
-      <p>Die Adresse passt zu keinem Kontakt im CRM. Ordne sie einem Unternehmen zu oder lege es neu an.</p>
-      <div><button type="button" class="btn btn-primary" onclick="openMailAssign('${{it.id}}')">Zuordnen / anlegen</button></div></div>`;
+      <p>Die Adresse passt zu keinem Kontakt im CRM. Über „Zuordnen / ändern“ unten einem Unternehmen zuordnen oder es neu anlegen.</p></div>`;
   }}
   if((it.anhaenge||[]).length){{
     h += `<div class="mr-block"><h3>Anhänge</h3>${{it.anhaenge.map(a=>`<div class="mr-anh">
@@ -4599,16 +4666,27 @@ function mrDetail(){{
         <label>Was ist zu tun?<input id="mr-auf-titel" value="${{_mrE(ts.title || (aus ? 'Nachfassen: ' : 'Antworten: ') + (it.subject || ''))}}"></label>
         <label>Fällig<input id="mr-auf-due" type="date" value="${{due}}"></label></div></div>`;
   }}
-  const prim = bekannt ? `<button type="button" class="btn btn-primary" onclick="confirmMailReviewItem('${{it.id}}', this)">Übernehmen</button>`
-             : lead ? `<button type="button" class="btn btn-primary" onclick="mrLeadUebernehmen('${{it.id}}', this)">Lead anlegen und übernehmen</button>`
-             : nl ? `<button type="button" class="btn btn-primary" onclick="discardMailReviewItem('${{it.id}}', true)">Nicht ins CRM</button>`
-             : `<button type="button" class="btn btn-primary" onclick="openMailAssign('${{it.id}}')">Zuordnen / anlegen</button>`;
+  // Aktionsleiste mit festen Plaetzen (16.11.2026): immer dieselben vier Knoepfe in derselben
+  // Reihenfolge. Je nach Mail ist ein Knopf ausgegraut oder fuehrt eine andere Aktion aus,
+  // er wandert aber nie. Links: Nicht ins CRM, Zuordnen / ändern. Rechts: Später, Übernehmen.
+  const _mrKnopf = (txt, cls, aktion, aus_grund, tip) => aus_grund
+    ? `<button type="button" class="btn ${{cls}}" disabled title="${{_mrE(aus_grund)}}">${{txt}}</button>`
+    : `<button type="button" class="btn ${{cls}}" onclick="${{aktion}}" title="${{_mrE(tip || '')}}">${{txt}}</button>`;
+  const uebAktion = bekannt ? `confirmMailReviewItem('${{it.id}}', this)`
+                  : lead ? `mrLeadUebernehmen('${{it.id}}', this)`
+                  : nl ? `discardMailReviewItem('${{it.id}}', true)` : '';
+  const uebTip = bekannt ? 'Zuordnung, Journal, Anhänge und Aufgabe wie oben eingestellt übernehmen'
+               : lead ? 'Unternehmen als Lead anlegen und die Mail dort ablegen'
+               : nl ? 'Vorschlag übernehmen: nicht ins CRM' : '';
   h += `<div class="mr-aktionen">
-      ${{nl ? '' : `<button type="button" class="btn btn-ghost" onclick="discardMailReviewItem('${{it.id}}')">Nicht ins CRM</button>`}}
+      ${{_mrKnopf('Nicht ins CRM', 'btn-ghost', `discardMailReviewItem('${{it.id}}', true)`, '', 'Mail aus dem Review nehmen, im Postfach bleibt sie')}}
+      ${{_mrKnopf('Zuordnen / ändern', 'btn-ghost', `openMailAssign('${{it.id}}')`,
+                  aus ? 'Gesendete Mails werden über den Empfänger zugeordnet' : '', 'Anderem Unternehmen oder Kontakt zuordnen, Person anlegen')}}
       <span class="mr-platz"></span>
-      ${{it.status === 'spaeter' ? '' : `<button type="button" class="btn btn-ghost" onclick="mrSpaeter('${{it.id}}')">Später</button>`}}
-      ${{prim}}</div>`;
-  if(!aus && !nl) h += `<div class="mr-ign">Künftig gar nicht mehr zeigen: <button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','adresse')">diesen Absender</button> · <button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','domain')">die ganze Domain</button></div>`;
+      ${{_mrKnopf('Später', 'btn-ghost', `mrSpaeter('${{it.id}}')`, it.status === 'spaeter' ? 'Ist bereits zurückgestellt' : '', 'Zurückstellen')}}
+      ${{_mrKnopf('Übernehmen', 'btn-primary', uebAktion, uebAktion ? '' : 'Erst zuordnen oder anlegen', uebTip)}}</div>`;
+  h += `<div class="mr-ign">Künftig gar nicht mehr zeigen: ${{aus ? '<span class="mr-grau">bei gesendeten Mails nicht möglich</span>'
+       : `<button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','adresse')">diesen Absender</button> · <button type="button" class="mr-lnk" onclick="ignoreMailReviewItem('${{it.id}}','domain')">die ganze Domain</button>`}}</div>`;
   h += '</div>';
   box.innerHTML = h;
   mrFirmenWahl();
@@ -4972,7 +5050,9 @@ function editContact(id) {{
     document.getElementById('contact-modal-title').textContent='✏️ '+c.firma;
     document.getElementById('c-id').value = c.id;
     document.getElementById('c-firma').value = c.firma||'';
-    document.getElementById('c-firma').disabled = true;
+    document.getElementById('c-firma').dataset.alt = c.firma||'';
+    document.getElementById('c-firma').disabled = false;
+    document.getElementById('c-firma-hint').textContent = 'Name änderbar – Aufgaben, Projekte und Kontakte bleiben verknüpft.';
     document.getElementById('c-email').value='';
     document.getElementById('c-tel').value='';
     _setStatusBoxes(c.status||'lead');
@@ -5036,6 +5116,15 @@ function saveContact() {{
       address:      document.getElementById('c-address').value,
       phone_central: document.getElementById('c-phone-central').value,
     }};
+    const fEl = document.getElementById('c-firma');
+    const neuName = fEl.value.replace(/\\s+/g,' ').trim();
+    const altName = fEl.dataset.alt || '';
+    if (!neuName) {{ document.getElementById('c-firma-hint').textContent = 'Der Firmenname darf nicht leer sein.'; return; }}
+    if (neuName !== altName) {{
+      if (!confirm('Unternehmen umbenennen?\\n\\n„'+altName+'“ → „'+neuName+'“\\n\\nAufgaben, Projekte, Kontakte und Journal bleiben verknüpft. '
+        +'Den Kundenordner in der Nextcloud bitte von Hand ebenfalls umbenennen, sonst findet der Abgleich ihn nicht mehr.')) return;
+      firmBody.firma = neuName;
+    }}
     api('PUT', '/api/contacts/'+encodeURIComponent(id), firmBody)
       .then(() => {{
         if (name) {{
@@ -5054,7 +5143,10 @@ function saveContact() {{
         }}
       }})
       .then(()=>{{ flash('c-ok','c-err',true); setTimeout(()=>reloadKeepPanel(),800); }})
-      .catch(()=>flash('c-ok','c-err',false));
+      .catch(e=>{{
+        flash('c-ok','c-err',false);
+        try {{ const m = JSON.parse(e).error; if (m) document.getElementById('c-firma-hint').textContent = m; }} catch(_) {{}}
+      }});
   }} else {{
     // Neu-Modus: Firma + Person anlegen
     const body = {{
@@ -5366,6 +5458,159 @@ document.addEventListener('DOMContentLoaded', ()=>{{
   // Unternehmen: Klick oeffnet seit dem UX-Sprint die Akte (mit Journal), nicht mehr das Log.
   wireLogRows('#o-tbl tbody tr', 'pipeline');
   document.addEventListener('keydown', e=>{{ if(e.key==='Escape') closeLogDrawer(); }});
+}});
+// ── Schnellauswahl Unternehmen/Kontakte (16.11.2026) ─────────────────
+// Filter-Chips mit Trefferzahlen, A–Z-Leiste, Suche und gespeicherte Sichten
+// (fuer alle Nutzer, Tabelle gespeicherte_sichten, Migration 025). Innerhalb einer
+// Gruppe gilt "oder", zwischen den Gruppen "und"; Merkmale gelten mit "und".
+const FX_ART = {{mandant:'Mandant', netzwerk:'Netzwerk', lieferant:'Lieferant', intern:'Eigenes Unternehmen'}};
+const FX_KT = {{w:'bis 30 Tage', m:'31–90 Tage', r:'über 90 Tage', nie:'noch nie'}};
+const FX_ST = {{lead:'Lead', interessent:'Interessent', kunde:'Kunde', netzwerk:'Netzwerk', partner:'Partner',
+               dienstleister:'Dienstleister', aktiv:'Aktiv', inaktiv:'Inaktiv', intern:'Intern'}};
+const FX_CFG = {{
+  'c-tbl': {{bereich:'firmen', einheit:['Unternehmen','Unternehmen'], und:['mk'], gruppen:[
+    ['art','Beziehung',FX_ART], ['st','Status',null], ['br','Branche',null], ['ort','Ort',null],
+    ['kt','Letzter Kontakt',FX_KT], ['mk','Merkmale',{{acos:'In ACOS', auf:'Offene Aufgabe'}}]]}},
+  'per-tbl': {{bereich:'personen', einheit:['Kontakt','Kontakten'], und:[], gruppen:[
+    ['art','Beziehung',FX_ART], ['st','Status',null], ['kp','Kampagne',null], ['fi','Unternehmen',null],
+    ['kt','Letzter Kontakt',FX_KT]]}}
+}};
+const FX = {{}};
+const FX_MAX = 10;
+function _fxE(s){{ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c])); }}
+function _fxZeilen(id){{ return Array.from(document.querySelectorAll('#' + id + ' tbody tr[data-fx]')); }}
+function _fxDaten(tr){{
+  if(!tr._fx){{ try {{ tr._fx = JSON.parse(tr.dataset.fx); }} catch(e){{ tr._fx = {{}}; }} tr._txt = tr.textContent.toLowerCase(); }}
+  return tr._fx;
+}}
+function _fxPasst(id, tr, ohne){{
+  const s = FX[id], cfg = FX_CFG[id], d = _fxDaten(tr);
+  if(s.q && !tr._txt.includes(s.q)) return false;
+  if(s.az && ohne !== '#az' && d.az !== s.az) return false;
+  for(const k in s.chips){{
+    if(k === ohne) continue;
+    const w = s.chips[k] || [];
+    if(!w.length) continue;
+    const hat = d[k] || [];
+    if(cfg.und.includes(k)){{ if(!w.every(x => hat.includes(x))) return false; }}
+    else if(!w.some(x => hat.includes(x))) return false;
+  }}
+  return true;
+}}
+function fxZeichnen(id){{
+  const s = FX[id], cfg = FX_CFG[id], box = document.getElementById('fx-' + id);
+  if(!s || !box) return;
+  const rows = _fxZeilen(id);
+  rows.forEach(_fxDaten);
+  let h = '';
+  for(const [k, titel, feste] of cfg.gruppen){{
+    const zahl = {{}};
+    rows.forEach(tr => {{ if(_fxPasst(id, tr, cfg.und.includes(k) ? null : k)) (tr._fx[k] || []).forEach(x => zahl[x] = (zahl[x] || 0) + 1); }});
+    const gew = s.chips[k] || [];
+    let werte = feste ? Object.keys(feste).filter(x => rows.some(tr => (tr._fx[k] || []).includes(x)))
+                      : Array.from(new Set(rows.flatMap(tr => tr._fx[k] || [])));
+    if(!feste) werte = werte.filter(x => zahl[x] || gew.includes(x))
+                            .sort((a, b) => (zahl[b] || 0) - (zahl[a] || 0) || a.localeCompare(b, 'de'));
+    if(!werte.length) continue;
+    const viele = werte.length > FX_MAX + 2;
+    const sicht = (!viele || s.offen[k]) ? werte : werte.filter((x, i) => i < FX_MAX || gew.includes(x));
+    h += `<div class="fx-grp"><span class="fx-lb">${{titel}}</span><div class="fx-chips">`
+      + sicht.map(x => {{
+          const n = zahl[x] || 0, on = gew.includes(x);
+          const txt = feste ? feste[x] : (k === 'st' ? (FX_ST[x] || x) : x);
+          return `<button type="button" class="fx-chip${{on ? ' on' : ''}}${{!n && !on ? ' leer' : ''}}" data-fx-k="${{k}}" data-fx-x="${{_fxE(x)}}" aria-pressed="${{on}}" onclick="fxChip('${{id}}',this)">${{_fxE(txt)}} <span>${{n}}</span></button>`;
+        }}).join('')
+      + (viele && !s.offen[k] ? `<button type="button" class="fx-lnk" onclick="FX['${{id}}'].offen['${{k}}']=true;fxZeichnen('${{id}}')">+ ${{werte.length - sicht.length}} weitere</button>` : '')
+      + (viele && s.offen[k] ? `<button type="button" class="fx-lnk" onclick="FX['${{id}}'].offen['${{k}}']=false;fxZeichnen('${{id}}')">weniger</button>` : '')
+      + '</div></div>';
+  }}
+  const da = new Set(rows.filter(tr => _fxPasst(id, tr, '#az')).map(tr => tr._fx.az));
+  h += '<div class="fx-az" aria-label="Nach Anfangsbuchstabe">' + '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c =>
+    `<button type="button" class="${{s.az === c ? 'on' : ''}}" ${{da.has(c) || s.az === c ? '' : 'disabled'}} onclick="fxAz('${{id}}','${{c}}')">${{c}}</button>`).join('') + '</div>';
+  let n = 0;
+  rows.forEach(tr => {{ const p = _fxPasst(id, tr); tr.classList.toggle('fx-aus', !p); if(p) n++; }});
+  const aktiv = s.q || s.az || Object.values(s.chips).some(v => v.length);
+  h += `<div class="fx-fuss"><span>${{n}} von ${{rows.length}} ${{rows.length === 1 ? cfg.einheit[0] : cfg.einheit[1]}}</span>`
+     + (aktiv ? `<button type="button" class="fx-lnk" onclick="fxLeeren('${{id}}')">Alle Filter lösen</button>` : '') + '</div>';
+  box.innerHTML = h;
+  fxSichtenZeichnen(id);
+}}
+function fxChip(id, el){{
+  const s = FX[id], k = el.dataset.fxK, x = el.dataset.fxX;
+  const w = s.chips[k] = s.chips[k] || [];
+  const i = w.indexOf(x);
+  if(i >= 0) w.splice(i, 1); else w.push(x);
+  s.aktiv = null;
+  fxZeichnen(id);
+}}
+function fxAz(id, c){{ const s = FX[id]; s.az = s.az === c ? null : c; fxZeichnen(id); }}
+function fxSuche(id, v){{
+  const s = FX[id]; if(!s) return;
+  s.q = (v || '').toLowerCase().trim(); s.aktiv = null;
+  const inp = document.getElementById('fx-q-' + id); if(inp && inp.value !== v) inp.value = v;
+  fxZeichnen(id);
+}}
+function fxLeeren(id){{
+  const s = FX[id]; s.chips = {{}}; s.q = ''; s.az = null; s.aktiv = null;
+  const inp = document.getElementById('fx-q-' + id); if(inp) inp.value = '';
+  fxZeichnen(id);
+}}
+function fxSichtenZeichnen(id){{
+  const s = FX[id], box = document.getElementById('fx-sichten-' + id);
+  if(!box) return;
+  box.innerHTML = '<span class="fx-lb">Sichten</span>' + s.sichten.map(v =>
+      `<span class="fx-sicht${{s.aktiv === v.id ? ' on' : ''}}"><button type="button" onclick="fxSichtAn('${{id}}',${{v.id}})" title="${{_fxE(v.von ? 'Angelegt von ' + v.von : '')}}">${{_fxE(v.name)}}</button>`
+    + `<button type="button" class="fx-x" aria-label="Sicht ${{_fxE(v.name)}} löschen" title="Sicht löschen" onclick="fxSichtWeg('${{id}}',${{v.id}})">×</button></span>`).join('')
+    + `<button type="button" class="fx-chip fx-neu" onclick="fxSichtNeu('${{id}}')">+ Sicht speichern</button>`;
+}}
+function fxSichtenLaden(id){{
+  api('GET', '/api/sichten?bereich=' + FX_CFG[id].bereich)
+    .then(l => {{ FX[id].sichten = l || []; fxSichtenZeichnen(id); }}).catch(() => {{}});
+}}
+function fxSichtAn(id, sid){{
+  const s = FX[id], v = s.sichten.find(x => x.id === sid);
+  if(!v) return;
+  if(s.aktiv === sid){{ fxLeeren(id); return; }}
+  const f = v.filter || {{}};
+  s.chips = JSON.parse(JSON.stringify(f.chips || {{}}));
+  s.q = (f.q || '').toLowerCase().trim(); s.az = null;
+  const inp = document.getElementById('fx-q-' + id); if(inp) inp.value = f.q || '';
+  s.aktiv = sid;
+  fxZeichnen(id);
+}}
+function fxSichtNeu(id){{
+  const s = FX[id];
+  const inp = document.getElementById('fx-q-' + id);
+  const q = inp ? inp.value.trim() : '';
+  const chips = {{}};
+  for(const k in s.chips) if(s.chips[k].length) chips[k] = s.chips[k].slice();
+  if(!q && !Object.keys(chips).length){{ alert('Erst Filter setzen, dann als Sicht speichern.'); return; }}
+  const name = (prompt('Name der Sicht (für alle Nutzer sichtbar):') || '').trim();
+  if(!name) return;
+  const body = {{bereich: FX_CFG[id].bereich, name: name, filter: {{chips: chips, q: q}}}};
+  const fehler = t => {{ try {{ return JSON.parse(t).error || ''; }} catch(e){{ return ''; }} }};
+  api('POST', '/api/sichten', body)
+    .catch(t => {{
+      const m = fehler(t);
+      if(m.includes('gibt es schon') && confirm(m + ' Mit den aktuellen Filtern überschreiben?'))
+        return api('POST', '/api/sichten', Object.assign({{ueberschreiben: true}}, body));
+      if(m) alert(m);
+      return null;
+    }})
+    .then(r => {{ if(r && r.id) FX[id].aktiv = r.id; fxSichtenLaden(id); }});
+}}
+function fxSichtWeg(id, sid){{
+  const s = FX[id], v = s.sichten.find(x => x.id === sid);
+  if(!v || !confirm('Sicht „' + v.name + '“ löschen? Sie verschwindet für alle Nutzer.')) return;
+  api('DELETE', '/api/sichten/' + sid)
+    .then(() => {{ if(s.aktiv === sid) s.aktiv = null; fxSichtenLaden(id); }})
+    .catch(() => alert('Sicht konnte nicht gelöscht werden.'));
+}}
+Object.keys(FX_CFG).forEach(id => {{
+  if(!document.getElementById('fx-' + id)) return;
+  FX[id] = {{chips: {{}}, q: '', az: null, offen: {{}}, sichten: [], aktiv: null}};
+  fxZeichnen(id);
+  fxSichtenLaden(id);
 }});
 </script>
 
@@ -6180,14 +6425,35 @@ def update_contact(contact_id, body):
         sets.append("art=%s"); params.append(a)
     if "funktion" in body and _spalte_da("firmen", "funktion"):
         sets.append("funktion=%s"); params.append((body.get("funktion") or "").strip() or None)
-    if body.get("firma"):
-        sets.append("name=%s"); params.append(body["firma"])
+    neuer_name = None
+    if "firma" in body:
+        # Umbenennen (16.11.2026). Verknuepfungen laufen ueber firmen.id, daher bleibt
+        # alles haengen. Namensgleichheit mit einer anderen Firma waere eine Dublette,
+        # die _resolve_firma_id (Suche nach lower(name)) nicht mehr eindeutig aufloest.
+        kandidat = re.sub(r"\s+", " ", (body.get("firma") or "")).strip()
+        if not kandidat:
+            raise ValueError("Der Firmenname darf nicht leer sein.")
+        if kandidat != row["name"]:
+            andere = _q1("SELECT id FROM firmen WHERE lower(name)=lower(%s) AND id<>%s",
+                         (kandidat, int(contact_id)))
+            if andere:
+                raise ValueError(f"Es gibt bereits ein Unternehmen „{kandidat}“. Bitte stattdessen zusammenführen oder einen anderen Namen wählen.")
+            neuer_name = kandidat
+            sets.append("name=%s"); params.append(kandidat)
     if not sets:
         return
     sets.append("updated_at=now()")
     params.append(int(contact_id))
     _x(f"UPDATE firmen SET {', '.join(sets)} WHERE id=%s", params)
     _audit("firmen", row["id"], "update", alt=dict(row), neu=body)
+    if neuer_name:
+        # Sammelprojekt "<Firma> – laufende Betreuung" mitziehen, sonst traegt es den alten Namen.
+        for pr in _q("SELECT id, name FROM projekte WHERE firma_id=%s AND name=%s",
+                     (int(contact_id), f"{row['name']} – laufende Betreuung")):
+            _x("UPDATE projekte SET name=%s, updated_at=now() WHERE id=%s",
+               (f"{neuer_name} – laufende Betreuung", pr["id"]))
+            _audit("projekte", pr["id"], "update", alt={"name": pr["name"]},
+                   neu={"name": f"{neuer_name} – laufende Betreuung"})
 
 def archive_contact(contact_id):
     """Ersetzt das bisherige Verschieben nach Firmen/_Archiv/."""
@@ -7957,6 +8223,68 @@ def _mail_anhaenge_verwerfen(item_id):
 
 def _tabelle_da(name):
     return _q1("SELECT to_regclass(%s) AS t", (name,))["t"] is not None
+
+
+# ── Gespeicherte Sichten (Schnellauswahl Unternehmen/Kontakte, 16.11.2026) ──
+# Benannte Filterkombinationen, sichtbar und loeschbar fuer alle Nutzer (Migration 025).
+SICHT_BEREICHE = ("firmen", "personen")
+
+def sichten_liste(bereich):
+    if bereich not in SICHT_BEREICHE:
+        raise ValueError("Unbekannter Bereich")
+    if not _tabelle_da("gespeicherte_sichten"):
+        return []
+    rows = _q("""SELECT s.id, s.name, s.filter, u.username AS von
+                 FROM gespeicherte_sichten s LEFT JOIN users u ON u.id = s.angelegt_von
+                 WHERE s.bereich=%s ORDER BY s.position, lower(s.name)""", (bereich,))
+    return [{"id": r["id"], "name": r["name"], "filter": r["filter"] or {}, "von": r["von"]} for r in rows]
+
+def sicht_speichern(body):
+    bereich = body.get("bereich")
+    if bereich not in SICHT_BEREICHE:
+        raise ValueError("Unbekannter Bereich")
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()
+    if not name:
+        raise ValueError("Bitte einen Namen für die Sicht angeben.")
+    if len(name) > 60:
+        raise ValueError("Der Name ist zu lang (höchstens 60 Zeichen).")
+    f = body.get("filter") or {}
+    if not isinstance(f, dict):
+        raise ValueError("Ungültiger Filter")
+    chips = {}
+    for k, v in (f.get("chips") or {}).items():
+        if isinstance(k, str) and re.fullmatch(r"[a-z]{1,8}", k) and isinstance(v, list):
+            werte = [str(x)[:120] for x in v if isinstance(x, (str, int))][:60]
+            if werte:
+                chips[k] = werte
+    q = str(f.get("q") or "").strip()[:200]
+    if not chips and not q:
+        raise ValueError("Erst Filter setzen, dann als Sicht speichern.")
+    filt = json.dumps({"chips": chips, "q": q}, ensure_ascii=False)
+    vorhanden = _q1("SELECT id, filter FROM gespeicherte_sichten WHERE bereich=%s AND lower(name)=lower(%s)", (bereich, name))
+    if vorhanden:
+        if not body.get("ueberschreiben"):
+            raise ValueError(f"Eine Sicht „{name}“ gibt es schon.")
+        _x("UPDATE gespeicherte_sichten SET filter=%s::jsonb, geaendert_am=now() WHERE id=%s", (filt, vorhanden["id"]))
+        _audit("gespeicherte_sichten", vorhanden["id"], "update", alt={"filter": vorhanden["filter"]}, neu={"filter": json.loads(filt)})
+        return {"ok": True, "id": vorhanden["id"]}
+    user = _current_actor()
+    uid = (_q1("SELECT id FROM users WHERE username=%s", (user,)) or {}).get("id") if user else None
+    r = _x("""INSERT INTO gespeicherte_sichten (bereich, name, filter, angelegt_von)
+              VALUES (%s, %s, %s::jsonb, %s) RETURNING id""", (bereich, name, filt, uid))[0]
+    _audit("gespeicherte_sichten", r["id"], "insert", neu={"bereich": bereich, "name": name, "filter": json.loads(filt)})
+    return {"ok": True, "id": r["id"]}
+
+def sicht_loeschen(sicht_id):
+    try:
+        sid = int(sicht_id)
+    except (TypeError, ValueError):
+        raise FileNotFoundError("Sicht nicht gefunden")
+    row = _q1("SELECT * FROM gespeicherte_sichten WHERE id=%s", (sid,))
+    if not row:
+        raise FileNotFoundError("Sicht nicht gefunden")
+    _x("DELETE FROM gespeicherte_sichten WHERE id=%s", (sid,))
+    _audit("gespeicherte_sichten", sid, "delete", alt={"bereich": row["bereich"], "name": row["name"], "filter": row["filter"]})
 
 def mail_anhaenge_aufraeumen(stunden=1):
     """Vorlaeufige Anhaenge ohne zugehoerigen Review-Eintrag loeschen (z. B. nach

@@ -312,3 +312,79 @@ aus, ist sie mit ihm weg. Sie muss deshalb zusätzlich außerhalb des Servers li
 Passwortmanager.
 
 Ausrollen ist nicht nötig, das Skript läuft unverändert.
+
+## 2026-11-16 – Unternehmen umbenennen (live 2026-11-16)
+
+Stammdaten → Unternehmen → Bearbeiten: Das Feld „Firma“ ist jetzt änderbar. Vor dem Speichern
+kommt eine Rückfrage mit altem und neuem Namen und dem Hinweis, den Kundenordner in der Nextcloud
+von Hand mitzuziehen (wissen_sync und acos_sync finden ihn über den Namen). Ein Name, den schon ein
+anderes Unternehmen trägt, wird abgelehnt (Hinweis: zusammenführen). Das Sammelprojekt
+„<Name> – laufende Betreuung“ wird mitumbenannt, Audit-Log wie gewohnt. Keine Migration.
+
+Dateien: `crm_core.py`, `crm_serve.py` (PUT /api/contacts gibt Fehler als 400 statt 500 zurück),
+neu `Migration-Postgres/test_firma_umbenennen.py`.
+
+Sandbox `crm_test`, Migrationen 002–024: `smoke_test.py` 84/84, `test_firma_umbenennen.py` 11/11,
+Dialog per Playwright ohne JavaScript-Fehler.
+
+Prüfsummen: vorher crm_core.py `ef604c8efb9dd9352067aad0019e379876e95dd1`, crm_serve.py
+`26cc8d43877c1bad468d1739e90505d5060e5200`; nachher crm_core.py
+`abff7a01e62dee3718ff7f4a59f262d7ee41e5ff` (Stand nach Punkt 4), crm_serve.py `4b60015a8a0782e66bd31a9061c8e0ea99fe2900` (Stand nach Punkt 4).
+
+## 2026-11-16 – Suchfeld bekommt keinen Benutzernamen mehr (live 2026-11-16)
+
+Beim Klick in die Unternehmensliste trug der Browser (Safari bzw. Passwort-Manager) den
+Benutzernamen ins Suchfeld ein. Ursache: Die Seite enthält in den Einstellungen das Feld
+„Bisheriges Passwort“ ohne zugehöriges Benutzerfeld. Der Browser nimmt dann das nächstbeste
+Textfeld, die Suche. Abhilfe: verstecktes Benutzerfeld (`set-pw-user`, autocomplete=username)
+bei „Passwort ändern“, alle Suchfelder mit `type=search`, `autocomplete=off` und Ignorier-Merkmalen
+für 1Password, LastPass und Bitwarden (auch nachträglich erzeugte, über `focusin`). Felder mit
+Vorschlagsliste (`list=`) bleiben unberührt. Datei: `crm_core.py`.
+
+Klick auf eine Zeile in Unternehmen öffnet die Akte überall in der Zeile (Chromium: 24 von 24
+Klickpunkten links, Mitte, rechts). In Safari noch am Live-System nachprüfen.
+
+## 2026-11-16 – Mail-Review: Aktionen immer an derselben Stelle (live 2026-11-16)
+
+Die Aktionsleiste unter jeder Mail hat jetzt feste Plätze: links „Nicht ins CRM“ und
+„Zuordnen / ändern“, rechts „Später“ und „Übernehmen“. Kein Knopf verschwindet oder wandert mehr.
+Passt eine Aktion nicht, ist sie ausgegraut, der Grund steht im Tooltip: Übernehmen bei
+unbekanntem Absender, Zuordnen bei gesendeten Mails, Später bei schon Zurückgestelltem.
+„Übernehmen“ führt immer den Vorschlag aus (zuordnen, Lead anlegen oder beim Newsletter
+nicht ins CRM). Die bisher verstreuten Zuordnen-Links und -Knöpfe in den Blöcken darüber sind
+entfallen. Die Zeile „Künftig gar nicht mehr zeigen“ steht immer da. Datei: `crm_core.py`.
+
+Test: sechs Fälle (bekannt, Lead, Newsletter, unbekannt, gesendet, zurückgestellt) mit
+fiktiven Daten, alle vier Knöpfe in jedem Fall auf denselben Positionen, keine JavaScript-Fehler.
+
+## 2026-11-16 – Schnellauswahl in Unternehmen und Kontakte (live 2026-11-16)
+
+Stammdaten → Unternehmen und → Kontakte bekommen über der Tabelle:
+- **Sichten:** gespeicherte Filterkombinationen als Knöpfe, für alle Nutzer gemeinsam
+  (neue Tabelle `gespeicherte_sichten`, **Migration 025**). „+ Sicht speichern“ fragt nach dem
+  Namen, gleicher Name fragt nach Überschreiben, × löscht nach Rückfrage. Zwei Startsichten:
+  „Aktive Mandanten“, „Lange kein Kontakt“.
+- **Suchfeld** wie bisher, wirkt mit den Chips zusammen.
+- **Filter-Chips mit Trefferzahl.** Unternehmen: Beziehung, Status, Branche, Ort (aus der
+  Adresse, ohne PLZ), Letzter Kontakt (bis 30 / 31–90 / über 90 Tage / noch nie), Merkmale
+  (In ACOS, Offene Aufgabe). Kontakte: Beziehung (des Unternehmens), Status, Kampagne,
+  Unternehmen, Letzter Kontakt. In einer Gruppe „oder“, zwischen Gruppen „und“, Merkmale „und“.
+  Lange Gruppen zeigen die 10 häufigsten Werte und „+ N weitere“.
+- **A–Z-Leiste:** Unternehmen nach Name, Kontakte nach Nachname; Umlaute beim Grundbuchstaben,
+  Ziffern unter #. Buchstaben ohne Treffer ausgegraut.
+- **Trefferzahl** „x von y“ und „Alle Filter lösen“. Filter werden nicht gemerkt.
+Die bisherigen Auswahllisten (Beziehung, Status, Kampagne) entfallen, die Chips ersetzen sie.
+
+Dateien: `crm_core.py`, `crm_serve.py` (`GET/POST /api/sichten`, `DELETE /api/sichten/<id>`),
+neu `Migration-Postgres/migration_025_sichten.sql` (sha1 `07cd351ee5593bdff54fa832308c7e6b8a220d9a`, idempotent),
+neu `Migration-Postgres/test_schnellauswahl.py`.
+
+Test: Sandbox `crm_test`, Migrationen 002–025 (025 zweimal eingespielt, ohne Fehler):
+`smoke_test.py` 84/84, `test_firma_umbenennen.py` 11/11, `test_schnellauswahl.py` 19/19.
+Browser mit 53 fiktiven Unternehmen und 50 Kontakten: Trefferzahlen auf den Chips stimmen mit
+der Tabelle überein, A–Z, Sicht anwenden und speichern, Zeilenklick öffnet weiter die Akte,
+Handy-Breite geprüft, keine JavaScript-Fehler.
+
+**Live 2026-11-16:** Release laut `DEPLOY-026-release-2026-11-16.md` ausgeliefert. Prüfsummen auf
+dem Server bestätigt, Migration 025 eingespielt, Dienst läuft, Ronald hat Unternehmen, Bearbeiten
+und Mail-Review im Browser durchgeklickt. Sicherung unter `/root/crm-code-vor-release-1116/`.

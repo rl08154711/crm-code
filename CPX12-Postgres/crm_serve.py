@@ -279,6 +279,11 @@ class CRMHandler(BaseHTTPRequestHandler):
                 if ctype != "application/pdf":   # Chrome zeigt PDFs mit Sandbox-Regel nicht an
                     kopf.append(("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"))
                 self._send(200, "OK", ctype, daten, extra_headers=kopf)
+            elif path == "/api/sichten":
+                try:
+                    self._send_json(core.sichten_liste((parse_qs(urlparse(self.path).query).get("bereich") or [""])[0]))
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
             elif path == "/api/einstellungen":
                 self._send_json(core.load_settings_view(self._current_user()))
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "journal":
@@ -488,6 +493,12 @@ class CRMHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send_json({"error": str(e)}, 400, "Bad Request")
                 return
+            elif path == "/api/sichten":
+                try:
+                    self._send_json(core.sicht_speichern(body))
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                return
             elif path == "/api/einstellungen/mailkonto/test":
                 if not core.may_change_system(self._current_user()):
                     self._send_json({"ok": False, "meldung": "Keine Berechtigung"}, 403, "Forbidden")
@@ -552,7 +563,14 @@ class CRMHandler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
                 core.update_task(parts[2], body)
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "contacts":
-                core.update_contact(unquote(parts[2]), body)
+                try:
+                    core.update_contact(unquote(parts[2]), body)
+                except FileNotFoundError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                    return
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                    return
             elif len(parts) == 5 and parts[0] == "api" and parts[1] == "contacts" and parts[3] == "persons":
                 core.update_person(unquote(parts[2]), unquote(parts[4]), body)
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "opportunities":
@@ -614,6 +632,12 @@ class CRMHandler(BaseHTTPRequestHandler):
                 core.archive_opp(unquote(parts[2]))
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "person-activities":
                 core.delete_person_activity(unquote(parts[2]))
+            elif len(parts) == 3 and parts[0] == "api" and parts[1] == "sichten":
+                try:
+                    core.sicht_loeschen(parts[2])
+                except FileNotFoundError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 404, "Not Found")
+                    return
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "mail-ignore":
                 core.remove_mail_ignore(unquote(parts[2]))
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "vertraege":
