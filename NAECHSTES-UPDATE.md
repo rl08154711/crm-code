@@ -419,3 +419,14 @@ Testmandanten M-13: AUF-2026-0001 Fehler (Auftragsordner fehlte), AUF-2026-0002 
 über den Abgleich durchgelaufen. Sicherungen unter `/root/crm-code-vor-auftraege/` und
 `/root/crm-code-vor-aufgabenfenster/`.
 Offen: „Bei ACOS nachsehen“ hat einmal keinen Abgleich ausgelöst (Lauf von Hand gestartet).
+
+## 2026-11-17 – Alle ACOS-Skills im Aufgabenfenster (live 2026-11-17, Release 029)
+
+Skill-Liste kommt aus ACOS und wird bei jedem ACOS-Abgleich aktualisiert (`system_einstellungen.acos_skills`),
+Voraussetzungen des Skills werden vorab in ACOS geprüft, „Zuletzt in ACOS nachgesehen“ im Fenster.
+Siehe `DEPLOY-029-acos-skills.md`. Sandbox: `test_acos_auftraege.py` 54/54, `smoke_test.py` 84/84.
+
+Nachtrag (Release 030, keine Migration): Status eines übergebenen Auftrags heißt „wartet auf Bearbeitung“,
+Fortschrittsschritt „in Bearbeitung“. Abarbeitung der Aufträge am Mac jetzt als geplante Aufgabe
+„ACOS-Aufträge aus dem CRM abarbeiten“ (stündlich 7:35–17:35, Rückfrage bei kostenpflichtiger Recherche).
+crm_core.py `fe1ecbe9eaca1c010c82ee07519359d69d9c023b`, acos_auftraege.py `a75127f673aac172f345e2b4e3b39849c6a26a6d`.

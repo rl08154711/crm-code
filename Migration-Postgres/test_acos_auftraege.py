@@ -37,6 +37,12 @@ def wirft(fn, teil):
     return False
 
 WISSEN = []
+SPECS = [{"slug": "mandatsstart-analyse", "title": "Mandatsstart-Analyse für die Geschäftsführung", "number": "21",
+          "purpose": "Vollständige Mandatsstart-Analyse.", "required_inputs": [{"type": "master_data"}, {"type": "intelligence", "kind": "website_profile"}]},
+         {"slug": "executive-summary", "title": "Executive Summary", "number": "3", "purpose": "Kompakte Standortbestimmung.",
+          "required_inputs": [{"type": "master_data"}]},
+         {"slug": "marketing-strategie", "title": "Marketing-Strategie", "number": "5", "purpose": "Strategie.",
+          "required_inputs": [{"type": "artifact", "spec": "executive-summary"}]}]
 GESENDET = []
 GEAENDERT = []    # an ACOS gesendete Stammdaten
 DATEIEN = {}      # (basis, rel) -> bytes
@@ -50,6 +56,12 @@ class MockMcp:
             return {"clients": [{"id": CID, "name": FIRMA, "status": "lead"}]}
         if name == "am_acos_knowledge_list":
             return {"objects": list(WISSEN), "truncated": False}
+        if name == "am_acos_artifact_specs_list":
+            return {"count": len(SPECS), "specs": list(SPECS)}
+        if name == "am_acos_context_pack":
+            gaps = [{"input": {"type": "intelligence", "kind": "website_profile"}, "required": True},
+                    {"input": {"type": "intelligence", "kind": "visibility_index"}, "required": False}]
+            return {"gaps": gaps if args.get("slug") == "mandatsstart-analyse" else []}
         if name == "am_acos_knowledge_get":
             return {"id": args.get("id"), "data": {"markdown": "Analyse (fiktiv)"}}
         raise AssertionError("unerwarteter Lesezugriff: " + name)
@@ -107,6 +119,18 @@ try:
     pruef("Akte liefert die Webseite", core.load_firma_akte(fid)["website"] == "www.zz-test-fiktiv.example")
     f = core._q1("SELECT id, name, status, branch, address, webseite FROM firmen WHERE id=%s", (fid,))
     pruef("Abgleich gibt die Webseite als company.website an ACOS", acos_sync.nutzdaten(f, CID)["company"]["website"] == "https://www.zz-test-fiktiv.example")
+
+    # ── Skills aus ACOS ──
+    core._x("DELETE FROM system_einstellungen WHERE schluessel='acos_skills'")
+    o = auf.optionen(fid)
+    pruef("Skills: beim ersten Bedarf aus ACOS geholt (3 Stueck, mit Stand)", len(o["typen"]) == 3 and o["skills_stand"])
+    ms = next(x for x in o["typen"] if x["slug"] == "mandatsstart-analyse")
+    pruef("Skills: Titel und Voraussetzungen lesbar", ms["titel"].startswith("Mandatsstart") and ms["voraussetzungen"] == ["Stammdaten", "Website-Profil"])
+    pruef("Skills: Verweis auf anderen Skill mit Titel", next(x for x in o["typen"] if x["slug"] == "marketing-strategie")["voraussetzungen"] == ["Artefakt „Executive Summary“"])
+    vs = auf.voraussetzungen(fid, "mandatsstart-analyse")
+    pruef("Voraussetzungen: nur Pflichtluecken aus ACOS", vs["ok"] and vs["fehlt"] == ["Website-Profil"])
+    pruef("Voraussetzungen: erfuellt", auf.voraussetzungen(fid, "executive-summary")["fehlt"] == [])
+    pruef("Voraussetzungen: ohne ACOS-Verknuepfung kein Abruf", not auf.voraussetzungen(fid2, "executive-summary")["ok"])
 
     # ── Voraussetzungen ──
     pruef("Optionen: Unternehmen mit ACOS moeglich", auf.optionen(fid)["verfuegbar"])
@@ -190,6 +214,20 @@ try:
           and verlauf(t)[-1] == "erledigt")
     pruef("Nach Abschluss kein Etikett, Status wieder frei", not next((x for x in core.load_tasks() if x["taskId"] == t), {"acos": ""})["acos"]
           and core.update_task(t, {"status": "Erledigt"}) is None)
+
+    # ── Skill-Liste aendert sich in ACOS ──
+    a_es = auf.uebergeben(t3, {"typ": "executive-summary", "thema": "Lage vor dem Jahresgespraech"}, "tester")["aktiv"]
+    pruef("Anderer Skill waehlbar, Titel im Auftrag", a_es["typ_text"] == "Executive Summary")
+    SPECS[:] = [x for x in SPECS if x["slug"] != "executive-summary"] + [{"slug": "nachfrage-matrix", "title": "Nachfrage-Matrix", "required_inputs": [{"type": "master_data"}]}]
+    acos_sync.abgleich("test")
+    sl = {x["slug"] for x in auf.optionen(fid)["typen"]}
+    pruef("Abgleich: neuer Skill erscheint, entfallener nicht mehr waehlbar", "nachfrage-matrix" in sl and "executive-summary" not in sl)
+    pruef("Entfallener Skill: laufender Auftrag zeigt weiter den Titel", auf.auftraege_zu_aufgabe(t3)["aktiv"]["typ_text"] == "Executive Summary")
+    pruef("Entfallener Skill: neue Uebergabe abgelehnt", wirft(lambda: auf.uebergeben(t2, {"typ": "executive-summary", "thema": "X"}), "nicht"))
+    pruef("Fenster: Zeitpunkt des letzten Abgleichs", auf.auftraege_zu_aufgabe(t3)["abgleich"]["zuletzt"] != "")
+    DATEIEN[("auftraege", f"ergebnis/{a_es['auftrags_id']}.json")] = json.dumps(
+        {"auftrags_id": a_es["auftrags_id"], "status": "fehler", "text": "Test"}).encode()
+    acos_sync.abgleich("test")
 
     # ── Fehler von Claude ──
     a3 = auf.uebergeben(t3, {"thema": "Risiken im Markt"}, "tester")["aktiv"]

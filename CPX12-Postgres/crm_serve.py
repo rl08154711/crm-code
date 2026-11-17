@@ -188,6 +188,11 @@ class CRMHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "Not Found"}, 404, "Not Found")
             elif path == "/api/tasks":
                 self._send_json(core.load_tasks())
+            elif path == "/api/acos/voraussetzungen":
+                import acos_auftraege
+                q = parse_qs(urlparse(self.path).query)
+                fid = (q.get("firma_id", [""])[0]).strip()
+                self._send_json(acos_auftraege.voraussetzungen(int(fid) if fid.isdigit() else None, (q.get("typ", [""])[0]).strip()))
             elif path in ("/api/acos/auftrag-optionen", "/api/acos/vorpruefung"):
                 # Aufgabenfenster: kann fuer dieses Unternehmen ein ACOS-Auftrag angelegt werden? (Migration 027)
                 import acos_auftraege

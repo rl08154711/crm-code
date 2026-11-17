@@ -3394,7 +3394,7 @@ button.hz-link:disabled{{opacity:.5}}
 .auf-links{{font-size:.8rem;margin-top:.2rem}}
 .auf-verlauf{{margin-top:.6rem;font-size:.78rem}} .auf-verlauf summary{{cursor:pointer;color:var(--text2)}}
 .auf-verlauf div{{margin:.25rem 0}} .auf-verlauf span{{color:var(--text2)}}
-.auf-fehler{{color:#b91c1c;font-size:.82rem;margin-top:.35rem}} .auf-warn{{color:#b45309}}
+.auf-fehler{{color:#b91c1c;font-size:.82rem;margin-top:.35rem}} .auf-warn{{color:#b45309}} .auf-gut{{color:#15803d}} .auf-leise{{color:var(--text2);font-size:.75rem;margin-top:.25rem}}
 .acos-pill{{font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:6px;margin-left:.4rem;white-space:nowrap;vertical-align:middle}}
 .acos-uebergeben{{background:#3b82f61a;color:#3b82f6}} .acos-rueckfrage{{background:#d977061a;color:#d97706}} .acos-bearbeitet{{background:#16a34a1a;color:#16a34a}}
 .auf-kopf{{font-weight:600;margin-bottom:.5rem}}
@@ -5048,7 +5048,7 @@ function aufFirmaWechsel() {{
   }}).catch(() => {{}});
 }}
 function _aufStepper(a) {{
-  const namen = ['übergeben', 'bei ACOS', 'Ergebnis da', 'abgeschlossen'];
+  const namen = ['übergeben', 'in Bearbeitung', 'Ergebnis da', 'abgeschlossen'];
   return '<div class="auf-step">' + namen.map((t, i) => {{
     let k = i < a.stufe ? 'on' : '';
     if (a.status === 'rueckfrage' && i === 1) k = 'w';
@@ -5068,8 +5068,11 @@ function aufZeichnen() {{
     h += '<div class="auf-zeile"><b>' + _esc(a.auftrags_id) + '</b> · ' + _esc(a.typ_text) + ' · <span class="auf-st auf-' + _esc(a.status) + '">' + _esc(a.status_text) + '</span></div>';
     h += '<div class="auf-klein">Thema: ' + _esc(a.thema) + '</div>';
     if (a.meldung) h += '<div class="auf-klein">' + _esc(a.meldung) + '</div>';
-    if (a.status === 'uebergeben') {{
-      h += '<button type="button" class="btn btn-ghost" onclick="aufNachsehen(this)">Bei ACOS nachsehen</button>';
+    if (a.status === 'uebergeben' || a.status === 'rueckfrage') {{
+      const ab = d.abgleich || {{}};
+      if (ab.laeuft) h += '<div class="auf-klein">Abgleich mit ACOS läuft gerade …</div>';
+      else if (ab.zuletzt) h += '<div class="auf-klein">Zuletzt in ACOS nachgesehen: ' + _esc(ab.zuletzt) + (a.status === 'uebergeben' ? ' – noch kein Ergebnis' : '') + '</div>';
+      if (a.status === 'uebergeben') h += '<button type="button" class="btn btn-ghost" onclick="aufNachsehen(this)"' + (ab.laeuft ? ' disabled' : '') + '>Bei ACOS nachsehen</button>';
     }}
     if (a.status === 'rueckfrage') {{
       h += '<div class="auf-rueck">' + _esc(a.rueckfrage || '') + '</div>';
@@ -5095,11 +5098,14 @@ function aufZeichnen() {{
       h += '<label class="auf-schalter"><input type="checkbox" id="auf-an" onchange="aufSchalter(this.checked)"> '
         + (a && a.status === 'erledigt' ? 'Erneut von ACOS bearbeiten lassen' : 'Von ACOS bearbeiten lassen') + '</label>';
       h += '<div id="auf-neu" style="display:none">';
-      h += '<label class="auf-label" for="auf-typ">Artefakt</label><select id="auf-typ">' + d.typen.map(t => '<option value="' + _esc(t.slug) + '">' + _esc(t.titel) + '</option>').join('') + '</select>';
+      const vorher = a && a.artefakttyp ? a.artefakttyp : 'mandatsstart-analyse';
+      h += '<label class="auf-label" for="auf-typ">Skill</label><select id="auf-typ" onchange="aufSkillInfo()">' + d.typen.map(t => '<option value="' + _esc(t.slug) + '"' + (t.slug === vorher ? ' selected' : '') + '>' + _esc(t.titel) + '</option>').join('') + '</select>';
+      h += '<div id="auf-skill" class="auf-klein"></div>';
       h += '<label class="auf-label" for="auf-thema">Thema (ohne Unternehmensnamen)</label><input id="auf-thema" maxlength="500" placeholder="Erstanalyse Unternehmensprofil und Marktumfeld"' + (a && a.thema ? ' value="' + _esc(a.thema) + '"' : '') + '>';
       h += '<label class="auf-label" for="auf-hinweise">Hinweise für ACOS (optional)</label><textarea id="auf-hinweise" rows="2"></textarea>';
       h += '<div id="auf-vor" class="auf-klein"></div>';
       if (!d.scharf) h += '<div class="auf-rueck">ACOS steht auf Trockenlauf – übergeben geht erst, wenn der Modus auf scharf steht.</div>';
+      if (d.skills_stand) h += '<div class="auf-klein auf-leise">Skill-Liste aus ACOS, Stand ' + _esc(d.skills_stand) + '</div>';
       h += '</div>';
     }} else if (d.grund) {{
       h += '<div class="auf-klein">' + _esc(d.grund) + '</div>';
@@ -5113,6 +5119,22 @@ function aufZeichnen() {{
   box.style.display = 'block';
   _aufSpeichernText();
 }}
+function aufSkillInfo() {{
+  const sel = document.getElementById('auf-typ'), info = document.getElementById('auf-skill');
+  if (!sel || !info || !_AUF.d) return;
+  const t = (_AUF.d.typen || []).find(x => x.slug === sel.value) || {{}};
+  let h = t.zweck ? _esc(t.zweck) : '';
+  h += '<div id="auf-vor-skill" class="auf-leise">Prüfe die Voraussetzungen in ACOS …</div>';
+  info.innerHTML = h;
+  const fid = document.getElementById('t-firma').value, slug = sel.value;
+  api('GET', '/api/acos/voraussetzungen?firma_id=' + encodeURIComponent(fid) + '&typ=' + encodeURIComponent(slug)).then(v => {{
+    const el = document.getElementById('auf-vor-skill');
+    if (!el || document.getElementById('auf-typ').value !== slug) return;
+    if (!v.ok) {{ el.textContent = v.meldung || 'Voraussetzungen nicht prüfbar.'; return; }}
+    if (!v.fehlt.length) {{ el.innerHTML = '<span class="auf-gut">Voraussetzungen in ACOS erfüllt.</span>'; return; }}
+    el.innerHTML = '<span class="auf-warn">In ACOS fehlt: ' + v.fehlt.map(_esc).join(', ') + '. ACOS wird voraussichtlich zurückfragen.</span>';
+  }}).catch(() => {{}});
+}}
 function aufSchalter(an) {{
   _AUF.an = an;
   document.getElementById('auf-neu').style.display = an ? 'block' : 'none';
@@ -5120,6 +5142,7 @@ function aufSchalter(an) {{
   if (!an) return;
   const th = document.getElementById('auf-thema');
   if (th && !th.value) th.focus();
+  aufSkillInfo();
   const vor = document.getElementById('auf-vor');
   vor.textContent = 'Prüfe den Kundenordner …';
   api('GET', '/api/acos/vorpruefung?firma_id=' + encodeURIComponent(document.getElementById('t-firma').value)).then(v => {{
@@ -5158,11 +5181,20 @@ function aufNachsehen(btn) {{
   btn.disabled = true;
   const id = _AUF.taskId;
   api('POST', '/api/acos/abgleich', {{}}).then(() => {{
-    btn.textContent = 'Abgleich läuft – die Anzeige aktualisiert sich gleich';
-    [40000, 90000].forEach(ms => setTimeout(() => {{
+    btn.textContent = 'Abgleich läuft …';
+    let runden = 0, gesehen = false;
+    const pruefen = () => {{
       if (_AUF.taskId !== id || !document.getElementById('modal-task').classList.contains('open')) return;
-      api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{ if (_AUF.taskId === id) _aufNeuGeladen(d); }}).catch(() => {{}});
-    }}, ms));
+      api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{
+        if (_AUF.taskId !== id) return;
+        const laeuft = d.abgleich && d.abgleich.laeuft;
+        if (laeuft) gesehen = true;
+        runden += 1;
+        if ((laeuft || (!gesehen && runden < 3)) && runden < 16) {{ setTimeout(pruefen, 8000); return; }}
+        _aufNeuGeladen(d);
+      }}).catch(() => {{ if (runden < 16) setTimeout(pruefen, 8000); }});
+    }};
+    setTimeout(pruefen, 4000);
   }}).catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
 }}
 

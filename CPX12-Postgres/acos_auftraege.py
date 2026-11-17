@@ -24,10 +24,18 @@ from pathlib import Path
 
 import crm_core as core
 
-TYPEN = {"mandatsstart-analyse": "Mandatsstart-Analyse"}
+# Skills (Artifact Specs) kommen aus ACOS: acos_sync.abgleich() holt die Liste bei jedem Lauf und legt sie
+# in system_einstellungen['acos_skills'] ab. Entfallene bleiben (aktiv=false) fuer bestehende Auftraege lesbar.
+SKILLS_KEY = "acos_skills"
+STANDARD_SKILLS = [{"slug": "mandatsstart-analyse", "titel": "Mandatsstart-Analyse", "nummer": "21", "zweck": "",
+                    "voraussetzungen": ["Stammdaten", "Website-Profil"], "aktiv": True}]
+VORAUSSETZUNG = {"master_data": "Stammdaten", "website_profile": "Website-Profil", "financial_snapshot": "Finanzdaten",
+                 "foerdermittel_match": "Fördermittel-Treffer", "visibility_index": "Sichtbarkeit",
+                 "capture_submission": "Fragebogen-Antworten", "collaboration_frame": "Ziel und Zusammenarbeit",
+                 "project_goal": "Projektziel"}
 OFFEN = ("uebergeben", "rueckfrage", "bearbeitet")
 STATUS_TEXT = {
-    "uebergeben": "bei ACOS",
+    "uebergeben": "wartet auf Bearbeitung",
     "rueckfrage": "Rückfrage",
     "bearbeitet": "Ergebnis da",
     "erledigt": "abgeschlossen",
@@ -41,6 +49,127 @@ ANWEISUNG = ("Auftrag aus dem CRM. Skill mandantenfiles, datenschutz stealth, Ma
              "und keinen Mandantennamen. Platzhalter unverändert lassen. Bei Rückfrage oder Fehler eine NEUE Datei "
              "ergebnis/<auftrags_id>.json mit {auftrags_id, status: rueckfrage|fehler, text} anlegen. "
              "Nichts überschreiben oder löschen.")
+
+
+def _voraussetzung_text(inp):
+    inp = inp or {}
+    if inp.get("type") == "artifact":
+        spec = inp.get("spec") or ""
+        titel = next((x["titel"] for x in skills(alle=True) if x["slug"] == spec), spec)
+        return f"Artefakt „{titel}“"
+    schluessel = inp.get("kind") or inp.get("type") or "?"
+    return VORAUSSETZUNG.get(schluessel, schluessel)
+
+
+def _skill(roh):
+    zweck = " ".join(str(roh.get("purpose") or roh.get("promise") or "").split())
+    if len(zweck) > 240:
+        zweck = zweck[:237].rstrip() + " …"
+    zweck = zweck.replace(" …", "").rstrip(" .…") + ("." if zweck else "")
+    return {"slug": str(roh.get("slug") or "").strip(), "titel": str(roh.get("title") or roh.get("slug") or "").strip(),
+            "nummer": str(roh.get("number") or ""), "zweck": zweck, "version": roh.get("version"),
+            "inputs": [i for i in (roh.get("required_inputs") or []) if isinstance(i, dict)], "aktiv": True}
+
+
+def skills_speichern(roh_liste):
+    """Liste aus am_acos_artifact_specs_list uebernehmen. Rueckgabe: (neu, entfallen)."""
+    alt = {x["slug"]: x for x in skills(alle=True, holen=False)}
+    neu = [_skill(r) for r in roh_liste if isinstance(r, dict) and r.get("slug")]
+    if not neu:
+        raise ValueError("ACOS hat keine Skills geliefert")
+    slugs = {x["slug"] for x in neu}
+    for x in neu:
+        x["voraussetzungen"] = []
+    entfallen = [dict(x, aktiv=False) for k, x in alt.items() if k not in slugs]
+    liste = sorted(neu, key=lambda x: x["titel"].lower()) + entfallen
+    for x in liste:   # Texte erst, wenn alle Titel bekannt sind (Verweise auf andere Skills)
+        x["voraussetzungen"] = [_voraussetzung_text_aus(i, liste) for i in x.get("inputs") or []] or x.get("voraussetzungen") or []
+    wert = {"stand": _jetzt().isoformat(timespec="seconds"), "skills": liste}
+    core._x("""INSERT INTO system_einstellungen (schluessel, wert, geaendert_am) VALUES (%s,%s::jsonb,now())
+               ON CONFLICT (schluessel) DO UPDATE SET wert=EXCLUDED.wert, geaendert_am=now()""",
+            (SKILLS_KEY, json.dumps(wert, ensure_ascii=False)))
+    return len([k for k in slugs if k not in alt]), len([x for x in entfallen if alt[x["slug"]].get("aktiv", True)])
+
+
+def _voraussetzung_text_aus(inp, liste):
+    if inp.get("type") == "artifact":
+        spec = inp.get("spec") or ""
+        return "Artefakt „" + next((x["titel"] for x in liste if x["slug"] == spec), spec) + "“"
+    schluessel = inp.get("kind") or inp.get("type") or "?"
+    return VORAUSSETZUNG.get(schluessel, schluessel)
+
+
+def _mcp():
+    import acos_sync
+    zug = acos_sync.lade_acos_zugang()
+    if not zug.get("ACOS_TOKEN") or not zug.get("ACOS_MCP_URL"):
+        raise ValueError("Zugang zu ACOS fehlt (secrets/acos.env).")
+    m = acos_sync.Mcp(zug["ACOS_MCP_URL"], zug["ACOS_TOKEN"])
+    m.start()
+    return m
+
+
+def skills_aus_acos(mcp=None):
+    """Skill-Liste in ACOS abfragen und speichern (aus dem Abgleich oder beim ersten Bedarf)."""
+    antwort = (mcp or _mcp()).lesen("am_acos_artifact_specs_list", {})
+    liste = antwort.get("specs") if isinstance(antwort, dict) else None
+    if not isinstance(liste, list):
+        import acos_sync
+        liste = acos_sync._liste(antwort, ("specs", "items", "data", "results"))
+    return skills_speichern(liste)
+
+
+def skills(alle=False, holen=True):
+    """Gespeicherte Skill-Liste; ist noch keine da, einmal in ACOS holen, sonst die Grundausstattung."""
+    wert = core._system_raw().get(SKILLS_KEY) or {}
+    liste = wert.get("skills") if isinstance(wert, dict) else None
+    if not liste and holen:
+        try:
+            skills_aus_acos()
+            liste = (core._system_raw().get(SKILLS_KEY) or {}).get("skills")
+        except Exception:
+            liste = None
+    liste = liste or STANDARD_SKILLS
+    return liste if alle else [x for x in liste if x.get("aktiv", True)]
+
+
+def skills_stand():
+    wert = core._system_raw().get(SKILLS_KEY) or {}
+    try:
+        return datetime.fromisoformat(wert["stand"]).astimezone().strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return ""
+
+
+def typ_titel(slug):
+    return next((x["titel"] for x in skills(alle=True, holen=False) if x["slug"] == slug), slug)
+
+
+def voraussetzungen(firma_id, slug):
+    """Fragt ACOS, welche Pflicht-Grundlagen dieser Skill beim Mandanten vermisst (Context Pack, nur 'gaps')."""
+    v = _verknuepfung(int(firma_id)) if firma_id else None
+    if not v or v["zustand"] != "bestaetigt" or not v["acos_client_id"]:
+        return {"ok": False, "meldung": "Unternehmen nicht mit ACOS verknüpft.", "fehlt": []}
+    try:
+        pack = _mcp().lesen("am_acos_context_pack", {"client_id": v["acos_client_id"], "slug": slug})
+    except ValueError as e:
+        return {"ok": False, "meldung": str(e), "fehlt": []}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "meldung": f"ACOS nicht erreichbar ({e.__class__.__name__}).", "fehlt": []}
+    gaps = pack.get("gaps") if isinstance(pack, dict) else None
+    fehlt = [_voraussetzung_text(g.get("input")) for g in (gaps or []) if isinstance(g, dict) and g.get("required")]
+    return {"ok": True, "meldung": "", "fehlt": fehlt}
+
+
+def abgleich_stand():
+    """Wann zuletzt in ACOS nachgesehen wurde und ob gerade ein Abgleich laeuft."""
+    if not core._tabelle_da("acos_laeufe"):
+        return {"zuletzt": "", "laeuft": False}
+    r = core._q1("""SELECT max(ende) FILTER (WHERE ende IS NOT NULL AND modus='scharf') AS zuletzt,
+                           bool_or(ende IS NULL AND start > now() - interval '15 minutes') AS laeuft
+                    FROM acos_laeufe""")
+    return {"zuletzt": r["zuletzt"].astimezone().strftime("%d.%m. %H:%M") if r and r["zuletzt"] else "",
+            "laeuft": bool(r and r["laeuft"])}
 
 
 def auftraege_basis():
@@ -125,7 +254,7 @@ def _auftrag_dict(r):
         if r.get(k):
             r[k] = r[k].astimezone().strftime("%d.%m.%Y %H:%M")
     r["status_text"] = STATUS_TEXT.get(r["status"], r["status"])
-    r["typ_text"] = TYPEN.get(r["artefakttyp"], r["artefakttyp"])
+    r["typ_text"] = typ_titel(r["artefakttyp"])
     r["stufe"] = STUFE.get(r["status"], 0)
     r["ergebnis_link"] = core._nextcloud_ordner_link(r["nextcloud_pfad"].rsplit("/", 1)[0]) if r.get("nextcloud_pfad") else ""
     r["ergebnis_name"] = r["nextcloud_pfad"].rsplit("/", 1)[-1] if r.get("nextcloud_pfad") else ""
@@ -144,7 +273,9 @@ def optionen(firma_id):
         if not v or v["zustand"] != "bestaetigt" or not v["acos_client_id"]:
             grund = "Das Unternehmen ist noch nicht mit einem ACOS-Mandanten verknüpft."
     return {"verfuegbar": not grund, "grund": grund, "scharf": _modus_scharf(),
-            "typen": [{"slug": k, "titel": v_} for k, v_ in TYPEN.items()]}
+            "typen": [{"slug": x["slug"], "titel": x["titel"], "zweck": x.get("zweck") or "",
+                       "voraussetzungen": x.get("voraussetzungen") or []} for x in skills()] if not grund else [],
+            "skills_stand": skills_stand()}
 
 
 def auftraege_zu_aufgabe(task_id):
@@ -163,7 +294,7 @@ def auftraege_zu_aufgabe(task_id):
                     "art": r["art"], "text": r["text"]}
                    for r in core._q("SELECT * FROM acos_auftrag_verlauf WHERE task_id=%s ORDER BY id DESC", (task_id,))]
     return dict(o, aktiv=_auftrag_dict(akt) if akt else None, auftraege=[_auftrag_dict(r) for r in rows],
-                verlauf=verlauf, task_status=t["status"])
+                verlauf=verlauf, task_status=t["status"], abgleich=abgleich_stand())
 
 
 def _klartext_pruefen(text, firma):
@@ -237,8 +368,9 @@ def uebergeben(task_id, body, username=None):
     ersetzt = akt if akt and akt["status"] in OFFEN else None
 
     typ = (body.get("typ") or (ersetzt["artefakttyp"] if ersetzt else "") or "mandatsstart-analyse").strip()
-    if typ not in TYPEN:
-        raise ValueError("Unbekannter Artefakttyp")
+    gueltig = {x["slug"] for x in skills()}
+    if typ not in gueltig and not (ersetzt and typ == ersetzt["artefakttyp"]):
+        raise ValueError("Diesen Skill gibt es in ACOS nicht (mehr). Bitte einen anderen wählen.")
     thema = " ".join((body.get("thema") or (ersetzt["thema"] if ersetzt else "") or "").split())
     if not thema:
         raise ValueError("Bitte ein Thema angeben.")
@@ -273,7 +405,7 @@ def uebergeben(task_id, body, username=None):
     aid = _next_auftrags_id()
     datei_rel = f"offen/{aid}.json"
     inhalt = {"auftrags_id": aid, "erstellt_am": _jetzt().isoformat(timespec="seconds"),
-              "acos_client_id": v["acos_client_id"], "artefakttyp": typ, "artefakttyp_titel": TYPEN[typ],
+              "acos_client_id": v["acos_client_id"], "artefakttyp": typ, "artefakttyp_titel": typ_titel(typ),
               "thema": thema, "hinweise": hinweise, "anweisung": ANWEISUNG}
     if ersetzt:
         inhalt["ersetzt"] = ersetzt["auftrags_id"]
@@ -294,7 +426,7 @@ def uebergeben(task_id, body, username=None):
     if ersetzt:
         core._x("""UPDATE acos_auftraege SET status='ersetzt', ersetzt_durch=%s, geaendert_am=now()
                    WHERE auftrags_id=%s""", (aid, ersetzt["auftrags_id"]))
-    text = f"An ACOS übergeben ({TYPEN[typ]}). Thema: {thema}"
+    text = f"An ACOS übergeben ({typ_titel(typ)}). Thema: {thema}"
     if folge:
         text += f" – {('Antwort' if body.get('antwort') else 'Nachbesserung')}: {folge}"
     if gesendet:
@@ -391,7 +523,7 @@ def _artefakte_zuordnen(notiz):
                  f"Ergebnis von ACOS: „{r['titel']}“, abgelegt unter /{r['nextcloud_pfad']} und im Kundenwissen")
         _task_status(a["task_id"], "Bearbeitet")
         _journal(a["firma_id"], f"ACOS-Ergebnis zu {a['auftrags_id']}: {r['titel']}",
-                 f"Auftrag aus Aufgabe {a['task_id']} ({TYPEN.get(a['artefakttyp'], a['artefakttyp'])}) von ACOS bearbeitet. "
+                 f"Auftrag aus Aufgabe {a['task_id']} ({typ_titel(a['artefakttyp'])}) von ACOS bearbeitet. "
                  f"Abgelegt unter /{r['nextcloud_pfad']}.",
                  {"auftrags_id": a["auftrags_id"], "task_id": a["task_id"], "acos_id": r["acos_id"],
                   "nextcloud_pfad": r["nextcloud_pfad"]})

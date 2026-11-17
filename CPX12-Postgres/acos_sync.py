@@ -591,6 +591,14 @@ def abgleich(ausgeloest_von="timer"):
             raise AcosFehler("Zugang fehlt: secrets/acos.env mit ACOS_TOKEN und ACOS_MCP_URL anlegen")
         mcp = Mcp(zug["ACOS_MCP_URL"], zug["ACOS_TOKEN"])
         mcp.start()
+        # Skill-Liste fuer das Aufgabenfenster (Migration 026/027) - nur lesen, darf den Lauf nicht stoeren
+        try:
+            import acos_auftraege
+            neu_s, weg_s = acos_auftraege.skills_aus_acos(mcp)
+            if neu_s or weg_s:
+                notiz("Skills", "hinweis", f"Skill-Liste aus ACOS: {neu_s} neu, {weg_s} entfallen")
+        except Exception as e:  # noqa: BLE001
+            notiz("Skills", "hinweis", f"Skill-Liste nicht aktualisiert ({e.__class__.__name__})")
         mandanten = [mandant(c) for c in _liste(mcp.lesen("am_acos_clients_list"))]
         nach_id = {m["id"]: m for m in mandanten if m["id"]}
 
