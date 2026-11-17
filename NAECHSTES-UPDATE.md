@@ -388,3 +388,34 @@ Handy-Breite geprüft, keine JavaScript-Fehler.
 **Live 2026-11-16:** Release laut `DEPLOY-026-release-2026-11-16.md` ausgeliefert. Prüfsummen auf
 dem Server bestätigt, Migration 025 eingespielt, Dienst läuft, Ronald hat Unternehmen, Bearbeiten
 und Mail-Review im Browser durchgeklickt. Sicherung unter `/root/crm-code-vor-release-1116/`.
+
+## 2026-11-17 – Aufgabe als Auftrag an ACOS, Webseite am Unternehmen (live 2026-11-17)
+
+- **Aufgabe → ACOS:** Im Aufgabenfenster bei einem mit ACOS verknüpften Unternehmen der Schalter
+  „Von ACOS bearbeiten lassen“ (Artefakt, Thema ohne Namen, Hinweise, Prüfung des Kundenordners,
+  fehlende Dateien gehen mit). „Speichern und übergeben“ legt `AUF-JJJJ-NNNN.json` in
+  `/Arbeitsdateien/Aufträge/offen/` ab. Claude arbeitet den Auftrag am Mac ab
+  (`AUFTRAEGE-ABARBEITEN.md`), Rückfrage oder Fehler als neue Datei in `ergebnis/`.
+- **Rückweg** über den ACOS-Abgleich: Artefakt mit Auftrags-ID im Titel → `<Kunde>/ACOS/Wissen` →
+  Kundenwissen, Auftrag „Ergebnis da“, Aufgabe „Bearbeitet“, Journal. Abschließen nur mit
+  „Geprüft, Aufgabe abschließen“ (zweiter Journal-Eintrag), alternativ „Nachbessern lassen“.
+- Der laufende Auftrag steuert den Aufgabenstatus (Statusfeld und Abhaken gesperrt), Etikett
+  „ACOS“ in Aufgabenliste, Heute und Akte, Verlauf im ACOS-Bereich statt Einträgen in den Notizen.
+- **Webseite am Unternehmen** (Akte → Stammdaten), geht mit dem Abgleich als `company.website` an ACOS.
+- Menüwechsel lädt die Ansicht neu, wenn seither etwas geändert wurde oder sie älter als eine
+  Minute ist (nicht bei offenem Formular).
+
+Dateien: `crm_core.py`, `crm_serve.py`, `acos_sync.py`, neu `acos_auftraege.py`,
+neu `Migration-Postgres/migration_026_acos_auftraege.sql`, neu `Migration-Postgres/migration_027_webseite_auftragsverlauf.sql`,
+neu `Migration-Postgres/test_acos_auftraege.py`, `AUFTRAEGE-ABARBEITEN.md`,
+`DEPLOY-027-acos-auftraege.md`, `DEPLOY-028-acos-aufgabenfenster.md`.
+
+Test: Sandbox `crm_test`, Migrationen 002–027: `smoke_test.py` 84/84, `test_acos_auftraege.py` 43/43,
+übrige Einzeltests grün, Browser ohne JavaScript-Fehler.
+
+**Live 2026-11-17:** Migration 026 und 027 eingespielt, Prüfsummen bestätigt. Nachweis am
+Testmandanten M-13: AUF-2026-0001 Fehler (Auftragsordner fehlte), AUF-2026-0002 Rückfrage
+(Website-Profil fehlt), AUF-2026-0003 als Folgeauftrag beantwortet, Artefakt in ACOS, Rückweg
+über den Abgleich durchgelaufen. Sicherungen unter `/root/crm-code-vor-auftraege/` und
+`/root/crm-code-vor-aufgabenfenster/`.
+Offen: „Bei ACOS nachsehen“ hat einmal keinen Abgleich ausgelöst (Lauf von Hand gestartet).

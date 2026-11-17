@@ -188,6 +188,27 @@ class CRMHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "Not Found"}, 404, "Not Found")
             elif path == "/api/tasks":
                 self._send_json(core.load_tasks())
+            elif path in ("/api/acos/auftrag-optionen", "/api/acos/vorpruefung"):
+                # Aufgabenfenster: kann fuer dieses Unternehmen ein ACOS-Auftrag angelegt werden? (Migration 027)
+                import acos_auftraege
+                fid = (parse_qs(urlparse(self.path).query).get("firma_id", [""])[0]).strip()
+                try:
+                    if path.endswith("optionen"):
+                        self._send_json(acos_auftraege.optionen(int(fid) if fid.isdigit() else None))
+                    else:
+                        self._send_json(acos_auftraege.vorpruefung_firma(int(fid) if fid.isdigit() else None))
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, 400, "Bad Request")
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks" and parts[3] in ("auftrag", "auftrag-vorpruefung"):
+                # Aufgabe als Auftrag an ACOS (Migration 026)
+                import acos_auftraege
+                try:
+                    f = acos_auftraege.auftraege_zu_aufgabe if parts[3] == "auftrag" else acos_auftraege.vorpruefung
+                    self._send_json(f(unquote(parts[2])))
+                except FileNotFoundError as e:
+                    self._send_json({"error": str(e)}, 404, "Not Found")
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, 400, "Bad Request")
             elif path == "/api/contacts":
                 self._send_json(core.load_contacts())
             elif len(parts) == 4 and parts[0] == "api" and parts[1] in ("persons", "opportunities") and parts[3] == "akte":
@@ -363,7 +384,11 @@ class CRMHandler(BaseHTTPRequestHandler):
                            extra_headers=[self._clear_session_cookie()])
                 return
             elif path == "/api/tasks":
-                core.create_task(body)
+                try:
+                    self._send_json({"ok": True, "taskId": core.create_task(body)})
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                return
             elif path == "/api/contacts":
                 core.create_contact(body)
             elif path == "/api/opportunities":
@@ -460,6 +485,18 @@ class CRMHandler(BaseHTTPRequestHandler):
                 core.ignore_mail_review_item(parts[2], body.get("scope", "adresse"))
             elif path == "/api/mail-ignore":
                 core.add_mail_ignore(body.get("muster", ""), body.get("art", "adresse"))
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks" and parts[3] in ("auftrag", "auftrag-abschliessen"):
+                import acos_auftraege
+                try:
+                    if parts[3] == "auftrag":
+                        self._send_json(acos_auftraege.uebergeben(unquote(parts[2]), body, self._current_user()))
+                    else:
+                        self._send_json(acos_auftraege.abschliessen(unquote(parts[2]), self._current_user()))
+                except FileNotFoundError as e:
+                    self._send_json({"error": str(e)}, 404, "Not Found")
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, 400, "Bad Request")
+                return
             elif path == "/api/wissen/abgleich":
                 self._send_json(core.wissen_abgleich_starten(self._current_user()))
                 return
@@ -561,7 +598,11 @@ class CRMHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_body()
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
-                core.update_task(parts[2], body)
+                try:
+                    core.update_task(parts[2], body)
+                except ValueError as e:
+                    self._send_json({"ok": False, "error": str(e)}, 400, "Bad Request")
+                    return
             elif len(parts) == 3 and parts[0] == "api" and parts[1] == "contacts":
                 try:
                     core.update_contact(unquote(parts[2]), body)

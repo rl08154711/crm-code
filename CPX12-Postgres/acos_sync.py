@@ -273,6 +273,9 @@ def nutzdaten(f, client_id=None):
     m = re.search(r"\b\d{5}\s+([^,]+)$", (f.get("address") or "").strip())
     if m:
         company["city"] = m.group(1).strip()
+    if (f.get("webseite") or "").strip():
+        w = f["webseite"].strip()
+        company["website"] = w if re.match(r"^https?://", w, re.I) else "https://" + w
     if company:
         d["company"] = company
     return d
@@ -287,14 +290,14 @@ def pruefwert(d):
 class Ablage:
     """Schreibt unter <Kundenpfad>/<Firma>/ACOS/Wissen. Legt nur an, ueberschreibt nie."""
 
-    def __init__(self):
+    def __init__(self, basis_pfad=None):
         z = ws.lade_zugang()
         url = z.get("WEBDAV_URL") or ""
         if not url or not z.get("WEBDAV_USER"):
             raise AcosFehler("Nextcloud-Zugang fehlt (secrets/wissen.env)")
         m = re.match(r"^(https?://.+?/remote\.php/dav/files/[^/]+/)", url)
         basis = m.group(1) if m else url.rstrip("/").rsplit("/", 1)[0] + "/"
-        basis += urllib.parse.quote(core.kunden_ablage_basis(), safe="/") + "/"
+        basis += urllib.parse.quote(basis_pfad or core.kunden_ablage_basis(), safe="/") + "/"
         self.dav = ws.Dav(basis, z["WEBDAV_USER"], z.get("WEBDAV_PASSWORD", ""))
 
     def gibt_es(self, rel):
@@ -592,7 +595,7 @@ def abgleich(ausgeloest_von="timer"):
         nach_id = {m["id"]: m for m in mandanten if m["id"]}
 
         firmen = core._q("""
-            SELECT f.id, f.name, f.status, f.branch, f.address, f.acos_fuehren, f.archiviert_am,
+            SELECT f.id, f.name, f.status, f.branch, f.address, to_jsonb(f)->>'webseite' AS webseite, f.acos_fuehren, f.archiviert_am,
                    v.zustand, v.acos_client_id, v.anlegen, v.pruefwert
             FROM firmen f LEFT JOIN acos_verknuepfung v ON v.firma_id = f.id
             WHERE f.acos_fuehren OR v.zustand IN ('vorgeschlagen', 'bestaetigt')
@@ -789,6 +792,12 @@ def abgleich(ausgeloest_von="timer"):
                 _verkn(fid, meldung=str(e)[:300], letzter_abgleich=datetime.now().astimezone())
                 notiz(name, "fehler", str(e))
                 zahl["fehler"] += 1
+
+        if scharf:
+            # Auftraege aus Aufgaben (Migration 026): Ergebnisse und Rueckfragen zuordnen
+            import acos_auftraege
+            nl = acos_auftraege.nachlauf(notiz)
+            zahl["auftraege"] = nl["ergebnisse"] + nl["rueckmeldungen"]
 
         if not firmen:
             meldung = "Kein Unternehmen ist als „In ACOS führen“ markiert."

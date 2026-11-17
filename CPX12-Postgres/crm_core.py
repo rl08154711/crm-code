@@ -186,7 +186,9 @@ def _resolve_person_id(name, firma_id=None):
     return row["id"] if row else None
 
 TASK_SELECT = """
-    SELECT t.*, p.name AS projekt_name, f.id AS firma_id_eff, f.name AS firma_name, per.name AS person_name
+    SELECT t.*, p.name AS projekt_name, f.id AS firma_id_eff, f.name AS firma_name, per.name AS person_name,
+           (SELECT a.status FROM acos_auftraege a WHERE a.task_id = t.task_id AND a.status <> 'ersetzt'
+            ORDER BY a.id DESC LIMIT 1) AS acos_status
     FROM tasks t
     LEFT JOIN projekte p ON p.id = t.projekt_id
     LEFT JOIN firmen f ON f.id = COALESCE(t.firma_id, p.firma_id)
@@ -218,7 +220,21 @@ def _task_row(r):
         "projekt": r["projekt_name"] or "",
         "firmaId": str(r["firma_id_eff"]) if r.get("firma_id_eff") else "",
         "herkunft": r.get("herkunft") or ("mail" if r["quelle_mail_id"] else "manuell"),
+        "acos": _acos_etikett(r.get("acos_status")),
     }
+
+ACOS_ETIKETT = {"uebergeben": ("ACOS", "#3b82f6"), "rueckfrage": ("ACOS: Rückfrage", "#d97706"),
+                "bearbeitet": ("ACOS: Ergebnis da", "#16a34a")}
+
+def _acos_etikett(st):
+    """Laufender ACOS-Auftrag einer Aufgabe (Migration 026): uebergeben, rueckfrage, bearbeitet oder ''."""
+    return st if st in ACOS_ETIKETT else ""
+
+def acos_badge(st):
+    if st not in ACOS_ETIKETT:
+        return ""
+    text, farbe = ACOS_ETIKETT[st]
+    return f' <span class="acos-pill" style="background:{farbe}1a;color:{farbe}">{text}</span>'
 
 
 def load_tasks():
@@ -518,6 +534,7 @@ def load_contacts():
             "branch":              f["branch"] or "",
             "address":             f["address"] or "",
             "phone_central":       f.get("telefon_zentrale") or "",
+            "website":             f.get("webseite") or "",
             "acos_fuehren":        bool(f.get("acos_fuehren")),
             "art":                 _art(f),
             "funktion":            f.get("funktion") or "",
@@ -1357,6 +1374,7 @@ function _akBadge(st){
   }).join(' ');
 }
 function _akInit(n){ return String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase(); }
+function _akWeb(w){ w = String(w||'').trim(); return /^https?:\/\//i.test(w) ? w : 'https://' + w; }
 function _akTel(t){ return 'tel:' + String(t||'').replace(/[^+\d]/g,''); }
 function _akMerken(){ try { if(_AK) sessionStorage.setItem('crm_akte', JSON.stringify({ typ:_AK.typ, id:_AK.id, tab:_AK.tab })); } catch(e){} }
 const AK_URL = { firma: id=>'/api/contacts/' + encodeURIComponent(id) + '/akte', person: id=>'/api/persons/' + encodeURIComponent(id) + '/akte',
@@ -1460,6 +1478,7 @@ function _akUebersicht(d, offen){
     const z = (l, v) => `<dt>${l}</dt><dd>${v || '<span class="ak-leer">–</span>'}</dd>`;
     h += `<dl class="ak-dl">${z('Beziehung', _akBeziehung(d))}${z('Branche', _akE(d.branch))}${z('Adresse', _akE(d.address))}
       ${z('Zentrale', d.phone_central ? `<a href="${_akTel(d.phone_central)}">${_akE(d.phone_central)}</a>` : '')}
+      ${z('Webseite', d.website ? `<a href="${_akE(_akWeb(d.website))}" target="_blank" rel="noopener">${_akE(d.website)}</a>` : '')}
       ${z('Quelle', _akE(d.source))}${z('Letzter Kontakt', _akD(d.last_contact))}${z('Im CRM seit', _akD(d.created))}</dl>`;
   } else {
     const st = String(d.status||'').split(',').map(x=>x.trim().toLowerCase());
@@ -1473,6 +1492,7 @@ function _akUebersicht(d, offen){
       <label class="ak-feld">Quelle<input id="ak-source" value="${_akE(d.source)}" placeholder="Eigenakquise, Empfehlung …"></label>
       <label class="ak-feld ak-voll">Adresse<input id="ak-address" value="${_akE(d.address)}" placeholder="Straße 1, 12345 Ort"></label>
       <label class="ak-feld">Telefon Zentrale<input id="ak-phone" value="${_akE(d.phone_central)}"></label>
+      <label class="ak-feld">Webseite<input id="ak-website" value="${_akE(d.website)}" placeholder="www.beispiel.de"></label>
       <label class="ak-feld">Letzter Kontakt<input id="ak-last" type="date" value="${_akE(d.last_contact)}"></label>
       <div class="ak-fuss ak-voll"><span class="ak-meldung" id="ak-msg"></span>
         <button type="button" class="ak-btn" onclick="_AK.edit=false;akteZeichnen()">Abbrechen</button>
@@ -1498,11 +1518,14 @@ function _akPersonZeile(p){
     ${nr ? `<a class="ak-iconbtn" href="${_akTel(nr)}" aria-label="${_akE(p.name)} anrufen">${AK_ICON.tel}</a>` : ''}
     ${p.email ? `<a class="ak-iconbtn" href="mailto:${_akE(p.email)}" aria-label="${_akE(p.name)} mailen">${AK_ICON.mail}</a>` : ''}</div>`;
 }
+const ACOS_TEXT = {uebergeben: 'ACOS', rueckfrage: 'ACOS: Rückfrage', bearbeitet: 'ACOS: Ergebnis da'};
+function _acosPill(st){ return ACOS_TEXT[st] ? `<span class="acos-pill acos-${st}">${ACOS_TEXT[st]}</span>` : ''; }
 function _akAufgabe(a, mitProjekt){
   const erl = a.status === 'Erledigt';
+  const lauf = !!ACOS_TEXT[a.acos];
   const due = a.deadline ? `<span class="ak-due${a.ueberfaellig ? ' rot' : ''}">${a.ueberfaellig ? 'überfällig · ' : ''}${_akD(a.deadline).slice(0,6)}</span>` : '';
-  return `<div class="ak-aufgabe${erl ? ' erl' : ''}"><input type="checkbox" ${erl ? 'checked' : ''} aria-label="Erledigt: ${_akE(a.title)}" onchange="akteAufgabeErledigt('${_akE(a.taskId)}', this.checked)">
-    <button type="button" class="ak-atitel" onclick="editTask('${_akE(a.taskId)}')">${_akE(a.title)}${mitProjekt && a.projekt ? `<small>${_akE(a.projekt)}</small>` : ''}</button>${due}</div>`;
+  return `<div class="ak-aufgabe${erl ? ' erl' : ''}"><input type="checkbox" ${erl ? 'checked' : ''} ${lauf ? 'disabled title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''} aria-label="Erledigt: ${_akE(a.title)}" onchange="akteAufgabeErledigt('${_akE(a.taskId)}', this.checked)">
+    <button type="button" class="ak-atitel" onclick="editTask('${_akE(a.taskId)}')">${_akE(a.title)}${_acosPill(a.acos)}${mitProjekt && a.projekt ? `<small>${_akE(a.projekt)}</small>` : ''}</button>${due}</div>`;
 }
 function _akJZeile(j){
   return `<button type="button" class="ak-j" onclick="openJournalEntry(${j.id})"><span class="ak-jd">${_akD(j.datum)}</span><span class="ak-ja">${_akE(j.art_label)}</span>
@@ -1813,6 +1836,7 @@ function akteStammSpeichern(){
   const fEl = document.getElementById('ak-funktion');
   const body = { art: art, funktion: art === 'mandant' ? '' : (fEl ? fEl.value.trim() : ''), status: st, branch: document.getElementById('ak-branch').value.trim(), source: document.getElementById('ak-source').value.trim(),
                  address: document.getElementById('ak-address').value.trim(), phone_central: document.getElementById('ak-phone').value.trim(),
+                 website: document.getElementById('ak-website').value.trim(),
                  last_contact: document.getElementById('ak-last').value };
   api('PUT', '/api/contacts/' + encodeURIComponent(_AK.id), body).then(()=>{ _AK.edit = false; _akListeVeraltet(); return akteLaden(); })
     .catch(t=>_akMsg(_akFehler(t)));
@@ -2091,8 +2115,8 @@ function renderHeuteStart(d){
   document.getElementById('hs-lage').textContent = lage.join(' · ');
   // Aufgaben
   const gruppe = (titel, liste, rot) => liste.length ? `<div class="hs-gruppe">${titel}</div>` + liste.map(t=>`<div class="hs-task">
-      <input type="checkbox" aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)">
-      <div class="hs-tt"><button type="button" class="hs-titel" onclick="editTask('${_hE(t.taskId)}')">${_hE(t.titel)}</button>
+      <input type="checkbox" ${t.acos ? 'disabled title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''} aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)">
+      <div class="hs-tt"><button type="button" class="hs-titel" onclick="editTask('${_hE(t.taskId)}')">${_hE(t.titel)}</button>${typeof _acosPill === 'function' ? _acosPill(t.acos) : ''}
         <div class="hs-wo">${t.firma ? `<button type="button" class="hz-link" onclick="${t.firmaId ? `openAkte('${t.firmaId}')` : `openContactByName('${_hE(t.firma)}')`}">${_hE(t.firma)}</button>` : '<span>eigene Aufgabe</span>'}${t.projekt ? ' · ' + _hE(t.projekt) : ''}</div></div>
       <span class="hs-due${rot ? ' rot' : ''}">${_hE(t.faellig)}</span></div>`).join('') : '';
   const auf = gruppe('Überfällig', a.ueber, true) + gruppe('Heute', a.heute) + gruppe('Diese Woche', a.woche);
@@ -2724,7 +2748,7 @@ def badge(text, color):
     return f'<span class="badge" style="background:{color}">{text}</span>'
 
 STATUS_COLORS = {
-    "offen": "#f59e0b", "in bearbeitung": "#3b82f6", "blockiert": "#ef4444",
+    "offen": "#f59e0b", "in bearbeitung": "#3b82f6", "bearbeitet": "#0d9488", "blockiert": "#ef4444",
     "erledigt": "#22c55e", "verschoben": "#8b5cf6",
     "aktiv": "#3b82f6", "lead": "#f59e0b", "kunde": "#22c55e",
     "interessent": "#a78bfa", "inaktiv": "#9ca3af", "won": "#22c55e", "lost": "#ef4444",
@@ -2816,7 +2840,7 @@ def build_dashboard():
         contact_cell = f'<a class="contact-link" href="#" onclick="openContactByName(\'{contact.replace(chr(39), chr(92)+chr(39))}\')">{contact}</a>' if contact else '<span style="color:#64748b;font-style:italic">eigene Aufgabe</span>'
         task_rows += f"""<tr class="t-zeile" tabindex="0" onclick="if(!event.target.closest('a'))editTask('{tid}')" onkeydown="if(event.key==='Enter')editTask('{tid}')">
           <td><span class="task-id">{tid}</span></td>
-          <td>{t['title']}{f'<small class="t-herkunft">{HERKUNFT.get(t.get("herkunft"), "")}</small>' if t.get("herkunft") not in (None, "", "manuell") else ''}</td>
+          <td>{t['title']}{acos_badge(t.get('acos'))}{f'<small class="t-herkunft">{HERKUNFT.get(t.get("herkunft"), "")}</small>' if t.get("herkunft") not in (None, "", "manuell") else ''}</td>
           <td>{contact_cell}</td>
           <td>{t.get('value','') or '<span style="color:#9ca3af">–</span>'}</td>
           <td>{prio_badge(t['priority'])}</td>
@@ -2969,7 +2993,7 @@ def build_dashboard():
             tid = t["taskId"]
             t_st = opp_status_by_id.get(str(t.get("projektId")), "laeuft")
             project_rows += f"""<tr class="firma-sub-row" data-group="{gid}" data-ostatus="{t_st}" style="display:none" onclick="event.stopPropagation();editTask('{tid}')">
-              <td>📋 {t['title']}</td>
+              <td>📋 {t['title']}{acos_badge(t.get('acos'))}</td>
               <td><span class="task-id">{tid}</span></td>
               <td>{t.get('value','') or '<span style="color:#9ca3af">–</span>'}</td>
               <td>{status_badge(t['status'])} {prio_badge(t['priority'])}</td>
@@ -3009,7 +3033,7 @@ def build_dashboard():
         tid = t["taskId"]
         heute_task_rows += f"""<tr>
           <td>👤 Aufgabe</td>
-          <td><strong>{t['title']}</strong></td>
+          <td><strong>{t['title']}</strong>{acos_badge(t.get('acos'))}</td>
           <td>{t.get('contact','') or '<span style="color:#9ca3af">–</span>'}</td>
           <td>{deadline_cell(t.get('deadline',''))}</td>
           <td><button class="btn btn-ghost" style="font-size:.78rem;padding:.25rem .6rem" onclick="editTask('{tid}')">Öffnen</button></td>
@@ -3356,6 +3380,32 @@ button.hz-link:disabled{{opacity:.5}}
 .form-row textarea{{resize:vertical;min-height:60px}}
 .modal-footer{{display:flex;gap:.5rem;justify-content:space-between;margin-top:1.2rem;align-items:center}}
 .modal-footer-right{{display:flex;gap:.5rem}}
+.auf-box{{border:1px solid var(--border);border-radius:8px;padding:.7rem .8rem;background:var(--surface2)}}
+.auf-box input:not([type=checkbox]),.auf-box select,.auf-box textarea{{width:100%;box-sizing:border-box}}
+.auf-box .btn{{margin-top:.5rem}}
+.auf-step{{display:flex;gap:.3rem;margin:.1rem 0 .6rem}}
+.auf-step div{{flex:1;font-size:.7rem;color:var(--text2)}}
+.auf-step span{{display:block;height:4px;border-radius:2px;background:var(--border);margin-bottom:.25rem}}
+.auf-step .on span{{background:#3b82f6}} .auf-step .w span{{background:#d97706}} .auf-step .ok span{{background:#16a34a}}
+.auf-label{{display:block;font-size:.75rem;margin:.5rem 0 .15rem;color:var(--text2)}}
+.auf-box label.auf-schalter{{display:flex;gap:.45rem;align-items:center;font-weight:600;cursor:pointer;margin:.2rem 0;text-transform:none;letter-spacing:normal;font-size:.9rem;color:inherit}}
+.auf-schalter input{{width:18px;height:18px;margin:0}}
+.auf-ergebnis{{margin:.5rem 0 .2rem;padding:.5rem .6rem;background:var(--surface);border-radius:6px;font-size:.85rem}}
+.auf-links{{font-size:.8rem;margin-top:.2rem}}
+.auf-verlauf{{margin-top:.6rem;font-size:.78rem}} .auf-verlauf summary{{cursor:pointer;color:var(--text2)}}
+.auf-verlauf div{{margin:.25rem 0}} .auf-verlauf span{{color:var(--text2)}}
+.auf-fehler{{color:#b91c1c;font-size:.82rem;margin-top:.35rem}} .auf-warn{{color:#b45309}}
+.acos-pill{{font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:6px;margin-left:.4rem;white-space:nowrap;vertical-align:middle}}
+.acos-uebergeben{{background:#3b82f61a;color:#3b82f6}} .acos-rueckfrage{{background:#d977061a;color:#d97706}} .acos-bearbeitet{{background:#16a34a1a;color:#16a34a}}
+.auf-kopf{{font-weight:600;margin-bottom:.5rem}}
+.auf-zeile{{font-size:.88rem}}
+.auf-karte{{margin:.35rem 0;padding:.45rem .6rem;background:var(--surface);border-radius:6px}}
+.auf-klein{{font-size:.78rem;opacity:.8;margin:.2rem 0}}
+.auf-rueck{{font-size:.8rem;margin:.3rem 0;color:#b45309}}
+.auf-st{{font-weight:600}}
+.auf-bearbeitet{{color:#15803d}} .auf-fehler{{color:#b91c1c}} .auf-rueckfrage{{color:#b45309}}
+.auf-neu{{margin-top:.5rem}} .auf-neu summary{{cursor:pointer;font-size:.85rem}}
+.auf-datei{{display:block;font-size:.8rem;margin:.15rem 0}}
 .save-status{{font-size:.78rem;color:var(--green);display:none}}
 .save-error{{font-size:.78rem;color:var(--red);display:none}}
 /* CONTACT LINKS */
@@ -3880,7 +3930,7 @@ tr.st-hidden{{display:none !important}}
     <input class="search-input" type="search" autocomplete="off" placeholder="Suchen..." oninput="filterTable('t-tbl',this.value)">
     <select class="filter-select" onchange="filterByCol('t-tbl',5,this.value)">
       <option value="">Alle Status</option>
-      <option>Offen</option><option>In Bearbeitung</option><option>Blockiert</option><option>Verschoben</option>
+      <option>Offen</option><option>In Bearbeitung</option><option>Bearbeitet</option><option>Blockiert</option><option>Verschoben</option>
     </select>
     <select class="filter-select" onchange="filterByCol('t-tbl',4,this.value)">
       <option value="">Alle Prioritäten</option>
@@ -4219,6 +4269,7 @@ tr.st-hidden{{display:none !important}}
     <div class="form-row"><label>Projekt (optional)</label>
       <select id="t-projekt" onchange="taskProjektWechsel()"><option value="">– ohne Projekt –</option>{projekt_options}</select>
     </div>
+    <div class="form-row full" id="t-auftrag-box" style="display:none"></div>
     <div class="form-row"><label>Wert (€)</label><input id="t-value" placeholder="1500€ (optional)"></div>
     <div class="form-row"><label>Kategorie</label>
       <select id="t-category"><option>Projektmanagement</option><option>Kundenakquise</option><option>Administrativ</option><option>Follow-up</option></select>
@@ -4227,7 +4278,7 @@ tr.st-hidden{{display:none !important}}
       <select id="t-prio"><option>Mittel</option><option>Kritisch</option><option>Hoch</option><option>Niedrig</option></select>
     </div>
     <div class="form-row"><label>Status</label>
-      <select id="t-status"><option>Offen</option><option>In Bearbeitung</option><option>Blockiert</option><option>Erledigt</option><option>Verschoben</option></select>
+      <select id="t-status"><option>Offen</option><option>In Bearbeitung</option><option>Bearbeitet</option><option>Blockiert</option><option>Erledigt</option><option>Verschoben</option></select>
     </div>
     <div class="form-row"><label>Deadline (YYYY-MM-DD)</label><input id="t-deadline" placeholder="2026-06-30" type="date"></div>
     <div class="form-row"><label>Zugewiesen</label><input id="t-assignee" placeholder="Ronald"></div>
@@ -4242,7 +4293,7 @@ tr.st-hidden{{display:none !important}}
       <span class="save-status" id="t-ok">✓ Gespeichert</span>
       <span class="save-error" id="t-err">Fehler!</span>
       <button class="btn btn-ghost" onclick="closeModal('task')">Abbrechen</button>
-      <button class="btn btn-primary" onclick="saveTask()">Speichern</button>
+      <button class="btn btn-primary" id="t-save-btn" onclick="saveTask()">Speichern</button>
     </div>
   </div>
 </div>
@@ -4806,7 +4857,36 @@ function mrAnhAblegen(cb){{
   if(acos){{ if(!cb.checked) acos.checked = false; acos.disabled = !cb.checked || !it.acos_verknuepft; }}
 }}
 // ── Panel navigation ──────────────────────────────────────────────────
+window._crmGeladen = Date.now();
+window._crmGeaendert = false;
+function _hinweisKurz(text) {{
+  const d = document.createElement('div');
+  d.textContent = text;
+  d.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:.5rem .9rem;border-radius:8px;font-size:.85rem;z-index:99999';
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 3500);
+}}
+function _formularOffen() {{
+  if (document.querySelector('.modal-overlay.open')) return true;
+  try {{ if (typeof _AK !== 'undefined' && _AK && _AK.form) return true; }} catch (e) {{}}
+  const a = document.activeElement;
+  return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.value && a.type !== 'search');
+}}
 function showPanel(name, tab) {{
+  // Beim Menuewechsel frische Daten: Seite neu laden, wenn zwischenzeitlich etwas geaendert wurde
+  // oder der Stand aelter als eine Minute ist. Nie bei offenem Formular (nichts geht verloren).
+  const aktuell = (typeof _activePanel === 'function') ? _activePanel() : null;
+  if (aktuell && name !== aktuell && !window._crmNachladen
+      && (window._crmGeaendert || Date.now() - window._crmGeladen > 60000)) {{
+    if (_formularOffen()) {{
+      _hinweisKurz('Formular offen – die Ansicht wird beim nächsten Wechsel aktualisiert.');
+    }} else {{
+      window._crmNachladen = true;
+      sessionStorage.setItem('crm_active_panel', name);
+      location.reload();
+      return;
+    }}
+  }}
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.panel===name));
   document.getElementById('view-'+name).classList.add('active');
@@ -4885,6 +4965,7 @@ function flash(okId, errId, ok) {{
 
 // ── API helpers ───────────────────────────────────────────────────────
 async function api(method, path, body) {{
+  if (method && method.toUpperCase() !== 'GET') window._crmGeaendert = true;   // Tab-Wechsel soll neu laden
   const r = await fetch(path, {{
     method, headers:{{'Content-Type':'application/json'}},
     body: body ? JSON.stringify(body) : undefined
@@ -4911,6 +4992,7 @@ function taskFirmaWechsel() {{
   Array.from(sel.options).forEach(o=>{{ if(o.value) o.hidden = !!fid && o.dataset.firma !== fid; }});
   const cur = sel.selectedOptions[0];
   if(cur && cur.value && fid && cur.dataset.firma !== fid) sel.value = '';
+  if (typeof aufFirmaWechsel === 'function') aufFirmaWechsel();
 }}
 function newTask() {{
   document.getElementById('task-modal-title').textContent='＋ Neue Aufgabe';
@@ -4922,8 +5004,168 @@ function newTask() {{
   document.getElementById('t-assignee').value='Ronald';
   document.getElementById('t-delete-btn').style.display='none';
   document.getElementById('t-archive-btn').style.display='none';
+  taskAuftragLaden(null);
   document.getElementById('modal-task').classList.add('open');
 }}
+/* ── ACOS-Auftrag im Aufgabenfenster (Migration 026/027) ── */
+let _AUF = {{taskId: null, d: null, an: false}};
+const _AUF_LAUF = ['uebergeben', 'rueckfrage', 'bearbeitet'];
+function _aufBox() {{ return document.getElementById('t-auftrag-box'); }}
+function _aufStatusSperre(lauf) {{
+  const s = document.getElementById('t-status');
+  s.disabled = !!lauf;
+  s.title = lauf ? 'Den Status steuert der ACOS-Auftrag' : '';
+}}
+function _aufAn() {{ const c = document.getElementById('auf-an'); return !!(c && c.checked); }}
+function _aufSpeichernText() {{
+  const b = document.getElementById('t-save-btn');
+  if (b) b.textContent = _aufAn() ? 'Speichern und übergeben' : 'Speichern';
+}}
+function _aufFehlerText(e) {{ try {{ return JSON.parse(e).error || String(e); }} catch (x) {{ return String(e); }} }}
+function _aufFehlerZeigen(e) {{
+  const el = document.getElementById('auf-fehler');
+  if (el) el.textContent = _aufFehlerText(e); else alert(_aufFehlerText(e));
+}}
+function taskAuftragLaden(id) {{
+  const box = _aufBox();
+  box.style.display = 'none'; box.innerHTML = '';
+  _AUF = {{taskId: id || null, d: null, an: false}};
+  _aufStatusSperre(false); _aufSpeichernText();
+  if (!id) {{ aufFirmaWechsel(); return; }}
+  api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{
+    if (_AUF.taskId !== id) return;
+    _AUF.d = d; aufZeichnen();
+  }}).catch(() => {{}});
+}}
+function aufFirmaWechsel() {{
+  if (document.getElementById('t-id').value) return;
+  const fid = document.getElementById('t-firma').value, box = _aufBox();
+  box.style.display = 'none'; box.innerHTML = ''; _AUF = {{taskId: null, d: null, an: false}}; _aufSpeichernText();
+  if (!fid) return;
+  api('GET', '/api/acos/auftrag-optionen?firma_id=' + encodeURIComponent(fid)).then(d => {{
+    if (document.getElementById('t-firma').value !== fid || document.getElementById('t-id').value) return;
+    _AUF.d = Object.assign({{aktiv: null, verlauf: []}}, d); aufZeichnen();
+  }}).catch(() => {{}});
+}}
+function _aufStepper(a) {{
+  const namen = ['übergeben', 'bei ACOS', 'Ergebnis da', 'abgeschlossen'];
+  return '<div class="auf-step">' + namen.map((t, i) => {{
+    let k = i < a.stufe ? 'on' : '';
+    if (a.status === 'rueckfrage' && i === 1) k = 'w';
+    if (a.status === 'erledigt') k = 'ok';
+    return '<div class="' + k + '"><span></span>' + t + '</div>';
+  }}).join('') + '</div>';
+}}
+function aufZeichnen() {{
+  const d = _AUF.d, box = _aufBox();
+  if (!d) return;
+  const a = d.aktiv, lauf = !!(a && _AUF_LAUF.indexOf(a.status) >= 0);
+  _aufStatusSperre(lauf);
+  if (!a && !d.verfuegbar && !(d.verlauf || []).length) {{ box.style.display = 'none'; return; }}
+  let h = '<div class="auf-box"><div class="auf-kopf">ACOS</div>';
+  if (a && (lauf || a.status === 'erledigt')) {{
+    h += _aufStepper(a);
+    h += '<div class="auf-zeile"><b>' + _esc(a.auftrags_id) + '</b> · ' + _esc(a.typ_text) + ' · <span class="auf-st auf-' + _esc(a.status) + '">' + _esc(a.status_text) + '</span></div>';
+    h += '<div class="auf-klein">Thema: ' + _esc(a.thema) + '</div>';
+    if (a.meldung) h += '<div class="auf-klein">' + _esc(a.meldung) + '</div>';
+    if (a.status === 'uebergeben') {{
+      h += '<button type="button" class="btn btn-ghost" onclick="aufNachsehen(this)">Bei ACOS nachsehen</button>';
+    }}
+    if (a.status === 'rueckfrage') {{
+      h += '<div class="auf-rueck">' + _esc(a.rueckfrage || '') + '</div>';
+      h += '<label class="auf-label" for="auf-antwort">Deine Antwort</label><textarea id="auf-antwort" rows="2"></textarea>';
+      h += '<button type="button" class="btn btn-primary" data-art="antwort" onclick="aufFolge(this.dataset.art)">Antwort an ACOS senden</button>';
+    }}
+    if (a.status === 'bearbeitet' || a.status === 'erledigt') {{
+      h += '<div class="auf-ergebnis">' + _esc(a.ergebnis_name || 'Ergebnis') + '<div class="auf-links">'
+        + (a.ergebnis_link ? '<a href="' + _esc(a.ergebnis_link) + '" target="_blank" rel="noopener">Im Kundenordner öffnen</a>' : '')
+        + (a.ergebnis_link && a.acos_link ? ' · ' : '')
+        + (a.acos_link ? '<a href="' + _esc(a.acos_link) + '" target="_blank" rel="noopener">In ACOS öffnen</a>' : '') + '</div></div>';
+    }}
+    if (a.status === 'bearbeitet') {{
+      h += '<button type="button" class="btn btn-primary" onclick="aufAbschliessen(this)">Geprüft, Aufgabe abschließen</button> ';
+      h += '<button type="button" class="btn btn-ghost" onclick="document.getElementById(&quot;auf-nach&quot;).style.display=&quot;block&quot;">Nachbessern lassen</button>';
+      h += '<div id="auf-nach" style="display:none"><label class="auf-label" for="auf-nachbessern">Was soll ACOS nachbessern?</label><textarea id="auf-nachbessern" rows="2"></textarea>';
+      h += '<button type="button" class="btn btn-primary" data-art="nachbessern" onclick="aufFolge(this.dataset.art)">An ACOS senden</button></div>';
+    }}
+  }}
+  if (!lauf) {{
+    if (a && a.status === 'fehler') h += '<div class="auf-rueck">' + _esc(a.auftrags_id) + ': ' + _esc(a.meldung || 'Fehler bei der Bearbeitung') + '</div>';
+    if (d.verfuegbar) {{
+      h += '<label class="auf-schalter"><input type="checkbox" id="auf-an" onchange="aufSchalter(this.checked)"> '
+        + (a && a.status === 'erledigt' ? 'Erneut von ACOS bearbeiten lassen' : 'Von ACOS bearbeiten lassen') + '</label>';
+      h += '<div id="auf-neu" style="display:none">';
+      h += '<label class="auf-label" for="auf-typ">Artefakt</label><select id="auf-typ">' + d.typen.map(t => '<option value="' + _esc(t.slug) + '">' + _esc(t.titel) + '</option>').join('') + '</select>';
+      h += '<label class="auf-label" for="auf-thema">Thema (ohne Unternehmensnamen)</label><input id="auf-thema" maxlength="500" placeholder="Erstanalyse Unternehmensprofil und Marktumfeld"' + (a && a.thema ? ' value="' + _esc(a.thema) + '"' : '') + '>';
+      h += '<label class="auf-label" for="auf-hinweise">Hinweise für ACOS (optional)</label><textarea id="auf-hinweise" rows="2"></textarea>';
+      h += '<div id="auf-vor" class="auf-klein"></div>';
+      if (!d.scharf) h += '<div class="auf-rueck">ACOS steht auf Trockenlauf – übergeben geht erst, wenn der Modus auf scharf steht.</div>';
+      h += '</div>';
+    }} else if (d.grund) {{
+      h += '<div class="auf-klein">' + _esc(d.grund) + '</div>';
+    }}
+  }}
+  if ((d.verlauf || []).length) {{
+    h += '<details class="auf-verlauf"><summary>Verlauf (' + d.verlauf.length + ')</summary>'
+      + d.verlauf.map(v => '<div><span>' + _esc(v.zeit) + ' · ' + _esc(v.auftrags_id || '') + '</span> ' + _esc(v.text) + '</div>').join('') + '</details>';
+  }}
+  box.innerHTML = h + '<div class="auf-fehler" id="auf-fehler" role="alert"></div></div>';
+  box.style.display = 'block';
+  _aufSpeichernText();
+}}
+function aufSchalter(an) {{
+  _AUF.an = an;
+  document.getElementById('auf-neu').style.display = an ? 'block' : 'none';
+  _aufSpeichernText();
+  if (!an) return;
+  const th = document.getElementById('auf-thema');
+  if (th && !th.value) th.focus();
+  const vor = document.getElementById('auf-vor');
+  vor.textContent = 'Prüfe den Kundenordner …';
+  api('GET', '/api/acos/vorpruefung?firma_id=' + encodeURIComponent(document.getElementById('t-firma').value)).then(v => {{
+    if (!v.ok) {{ vor.innerHTML = '<span class="auf-warn">' + _esc(v.meldung) + '</span>'; return; }}
+    if (!v.fehlend.length) {{ vor.textContent = 'Alle ' + v.gesamt + ' Datei(en) des Kundenordners liegen schon in ACOS.'; return; }}
+    vor.innerHTML = 'Noch nicht in ACOS – angehakte Dateien werden mitgesendet:' + v.fehlend.map(f =>
+      '<label class="auf-datei"><input type="checkbox" class="auf-dat" value="' + _esc(f.pfad) + '"' + (f.sendbar ? ' checked' : ' disabled') + '> '
+      + _esc(f.pfad) + (f.sendbar ? '' : ' <i>(' + _esc(f.grund) + ')</i>') + '</label>').join('');
+  }}).catch(() => {{ vor.textContent = 'Der Kundenordner konnte nicht geprüft werden.'; }});
+}}
+function _aufBody() {{
+  return {{
+    typ: document.getElementById('auf-typ').value,
+    thema: document.getElementById('auf-thema').value,
+    hinweise: document.getElementById('auf-hinweise').value,
+    dateien_senden: Array.from(document.querySelectorAll('.auf-dat:checked')).map(x => x.value)
+  }};
+}}
+function _aufNeuGeladen(d) {{
+  _AUF.d = d; _AUF.an = false; aufZeichnen();
+  if (d.task_status) document.getElementById('t-status').value = d.task_status;
+}}
+function aufFolge(art) {{
+  const feld = document.getElementById(art === 'antwort' ? 'auf-antwort' : 'auf-nachbessern'), text = feld.value.trim();
+  if (!text) {{ _aufFehlerZeigen(art === 'antwort' ? 'Bitte die Rückfrage beantworten.' : 'Bitte beschreiben, was nachgebessert werden soll.'); return; }}
+  const b = {{}}; b[art] = text;
+  api('POST', '/api/tasks/' + encodeURIComponent(_AUF.taskId) + '/auftrag', b).then(_aufNeuGeladen).catch(_aufFehlerZeigen);
+}}
+function aufAbschliessen(btn) {{
+  btn.disabled = true;
+  api('POST', '/api/tasks/' + encodeURIComponent(_AUF.taskId) + '/auftrag-abschliessen', {{}})
+    .then(() => {{ closeModal('task'); reloadKeepPanel(); }})
+    .catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
+}}
+function aufNachsehen(btn) {{
+  btn.disabled = true;
+  const id = _AUF.taskId;
+  api('POST', '/api/acos/abgleich', {{}}).then(() => {{
+    btn.textContent = 'Abgleich läuft – die Anzeige aktualisiert sich gleich';
+    [40000, 90000].forEach(ms => setTimeout(() => {{
+      if (_AUF.taskId !== id || !document.getElementById('modal-task').classList.contains('open')) return;
+      api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{ if (_AUF.taskId === id) _aufNeuGeladen(d); }}).catch(() => {{}});
+    }}, ms));
+  }}).catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
+}}
+
 function editTask(id) {{
   api('GET','/api/tasks').then(data=>{{
     const t = data.find(x=>x.taskId===id);
@@ -4945,6 +5187,7 @@ function editTask(id) {{
     document.getElementById('t-delete-btn').style.display='inline-flex';
     document.getElementById('t-archive-btn').style.display='inline-flex';
     document.getElementById('modal-task').classList.add('open');
+    taskAuftragLaden(id);
   }});
 }}
 function saveTask() {{
@@ -4965,11 +5208,25 @@ function saveTask() {{
     assignedTo: document.getElementById('t-assignee').value,
     notes:      document.getElementById('t-notes').value,
   }};
+  const mitAcos = _aufAn();
+  if (mitAcos && !document.getElementById('auf-thema').value.trim()) {{
+    _aufFehlerZeigen('Bitte ein Thema für ACOS angeben.');
+    return;
+  }}
   const method = id ? 'PUT' : 'POST';
   const path   = id ? '/api/tasks/'+id : '/api/tasks';
+  const fertig = () => {{ flash('t-ok','t-err',true); setTimeout(()=>reloadKeepPanel(),800); }};
   api(method, path, body)
-    .then(()=>{{ flash('t-ok','t-err',true); setTimeout(()=>reloadKeepPanel(),800); }})
-    .catch(()=>flash('t-ok','t-err',false));
+    .then(r => {{
+      const tid = id || (r && r.taskId);
+      if (!mitAcos || !tid) {{ fertig(); return; }}
+      document.getElementById('t-id').value = tid;   // gespeichert; ein zweiter Klick legt nichts doppelt an
+      _AUF.taskId = tid;
+      return api('POST', '/api/tasks/' + encodeURIComponent(tid) + '/auftrag', _aufBody())
+        .then(fertig)
+        .catch(e => {{ flash('t-ok','t-err',false); _aufFehlerZeigen(e); }});
+    }})
+    .catch(e => {{ flash('t-ok','t-err',false); const m = _aufFehlerText(e); if (m && m.length < 400 && m.indexOf('Traceback') < 0) alert(m); }});
 }}
 function deleteTask() {{
   if(!confirm('Aufgabe wirklich löschen?')) return;
@@ -6304,6 +6561,12 @@ def update_task(task_id, body):
     row = _q1("SELECT * FROM tasks WHERE task_id=%s", (task_id,))
     if not row:
         raise FileNotFoundError(f"Aufgabe nicht gefunden: {task_id}")
+    if "status" in body and body["status"] != row["status"]:
+        import acos_auftraege   # laufender ACOS-Auftrag steuert den Status (Migration 026/027)
+        lauf = acos_auftraege.status_gesperrt(task_id)
+        if lauf:
+            raise ValueError(f"Die Aufgabe läuft als ACOS-Auftrag {lauf['auftrags_id']}. Den Status steuert der Auftrag; "
+                             "abschließen im Aufgabenfenster mit „Geprüft, Aufgabe abschließen“.")
     sets, params = [], []
     simple = {"title": "title", "category": "category", "priority": "priority",
               "status": "status", "assignedTo": "assigned_to", "notes": "notes"}
@@ -6404,13 +6667,24 @@ def update_person_file(person_id, body):
     _x(f"UPDATE personen SET {', '.join(sets)} WHERE id=%s", params)
     _audit("personen", row["id"], "update", alt=dict(row), neu=body)
 
+def _webseite(w):
+    """Webseite vereinheitlichen: ohne Leerzeichen, ohne abschliessenden Schraegstrich; leer -> None."""
+    w = re.sub(r"\s+", "", str(w or ""))[:300].rstrip("/")
+    if not w:
+        return None
+    if not re.match(r"^(https?://)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$", w):
+        raise ValueError("Die Webseite sieht nicht wie eine Adresse aus (z. B. www.beispiel.de).")
+    return w
+
 def update_contact(contact_id, body):
     row = _q1("SELECT * FROM firmen WHERE id=%s", (int(contact_id),))
     if not row:
         raise FileNotFoundError(f"Firma nicht gefunden: {contact_id}")
     mapping = {"status": "status", "last_contact": "last_contact", "next_action": "next_action",
                "branch": "branch", "source": "source", "address": "address",
-               "phone_central": "telefon_zentrale"}
+               "phone_central": "telefon_zentrale", "website": "webseite"}
+    if "website" in body:
+        body = dict(body, website=_webseite(body.get("website")))
     sets, params = [], []
     for bkey, col in mapping.items():
         if bkey in body:
@@ -6488,6 +6762,7 @@ def load_firma_akte(firma_id):
     return {
         "id": str(f["id"]), "firma": f["name"], "status": f["status"] or "lead",
         "branch": f["branch"] or "", "address": f["address"] or "", "phone_central": f.get("telefon_zentrale") or "",
+        "website": f.get("webseite") or "",
         "source": f["source"] or "", "last_contact": _d(f["last_contact"]), "next_action": f["next_action"] or "",
         "kundennr": f.get("kundennr"), "created": _d(f["created_at"]),
         "acos_fuehren": bool(f.get("acos_fuehren")), "archiviert": f["archiviert_am"] is not None,
@@ -9326,7 +9601,8 @@ def _heute_aufgaben(tag):
         gruppe = "ueber" if dl < tag else "heute" if dl == tag else "woche"
         out[gruppe].append({"taskId": r["task_id"], "titel": r["title"] or "", "firma": r["firma_name"] or "",
                             "firmaId": str(r["firma_id_eff"]) if r.get("firma_id_eff") else "",
-                            "projekt": r["projekt_name"] or "", "faellig": _faellig_text(dl, tag)})
+                            "projekt": r["projekt_name"] or "", "faellig": _faellig_text(dl, tag),
+                            "acos": _acos_etikett(r.get("acos_status"))})
     return out
 
 def _vorbereitung(firma_id):
