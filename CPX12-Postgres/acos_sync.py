@@ -698,6 +698,9 @@ def abgleich(ausgeloest_von="timer"):
                 # ── Wissensobjekte (additiv) ──
                 antwort = mcp.lesen("am_acos_knowledge_list", {"client_id": cid, "limit": 200})
                 objekte = [wissensobjekt(k) for k in _liste(antwort)]
+                # Auftraege und Rueckfragen aus dem CRM (Migration 028) sind Betriebsobjekte, kein Kundenwissen
+                import acos_auftraege
+                objekte = [o for o in objekte if (o.get("art") or "") not in acos_auftraege.INTERNE_ARTEN]
                 abgeschnitten = isinstance(antwort, dict) and bool(antwort.get("truncated"))
                 gesehen = []
                 for o in objekte:
@@ -804,7 +807,7 @@ def abgleich(ausgeloest_von="timer"):
         if scharf:
             # Auftraege aus Aufgaben (Migration 026): Ergebnisse und Rueckfragen zuordnen
             import acos_auftraege
-            nl = acos_auftraege.nachlauf(notiz)
+            nl = acos_auftraege.nachlauf(notiz, mcp)
             zahl["auftraege"] = nl["ergebnisse"] + nl["rueckmeldungen"]
 
         if not firmen:

@@ -430,3 +430,14 @@ Nachtrag (Release 030, keine Migration): Status eines übergebenen Auftrags hei�
 Fortschrittsschritt „in Bearbeitung“. Abarbeitung der Aufträge am Mac jetzt als geplante Aufgabe
 „ACOS-Aufträge aus dem CRM abarbeiten“ (stündlich 7:35–17:35, Rückfrage bei kostenpflichtiger Recherche).
 crm_core.py `fe1ecbe9eaca1c010c82ee07519359d69d9c023b`, acos_auftraege.py `a75127f673aac172f345e2b4e3b39849c6a26a6d`.
+
+## 2026-11-17 – Aufträge über ACOS statt Nextcloud, reine Serverlösung (Release 031, Migration 028)
+
+Das CRM legt den Auftrag als Wissensobjekt `crm_auftrag` in der ACOS-Kundenakte an, Rückfragen kommen als
+`crm_rueckfrage`. Beide gehen nicht ins Kundenwissen. Abarbeitung durch eine geplante Aufgabe in der Cloud,
+der Mac muss nicht laufen; der Ordner `/Arbeitsdateien/Aufträge` wird nicht mehr gebraucht.
+Siehe `DEPLOY-031-auftrag-in-acos.md`, `AUFTRAEGE-ABARBEITEN.md`. Sandbox: `test_acos_auftraege.py` 58/58, `smoke_test.py` 84/84.
+
+**Live 2026-11-17, Nachweis 18.11.2026:** Migration 028 eingespielt, Übergabe über ACOS und Abarbeitung durch die
+geplante Aufgabe „ACOS-Aufträge abarbeiten (Server)“ von Ronald getestet. Die geplante Aufgabe am Mac ist abgeschaltet.
+Sicherung unter `/root/crm-code-vor-auftrag-acos/`.

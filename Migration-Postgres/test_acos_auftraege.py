@@ -37,6 +37,8 @@ def wirft(fn, teil):
     return False
 
 WISSEN = []
+OBJEKTE = {}      # in ACOS angelegte Auftrags-/Rueckfrage-Objekte: id -> {kind, title, data, client_id}
+ACOS_AUS = {"an": True}
 SPECS = [{"slug": "mandatsstart-analyse", "title": "Mandatsstart-Analyse für die Geschäftsführung", "number": "21",
           "purpose": "Vollständige Mandatsstart-Analyse.", "required_inputs": [{"type": "master_data"}, {"type": "intelligence", "kind": "website_profile"}]},
          {"slug": "executive-summary", "title": "Executive Summary", "number": "3", "purpose": "Kompakte Standortbestimmung.",
@@ -55,7 +57,11 @@ class MockMcp:
         if name == "am_acos_clients_list":
             return {"clients": [{"id": CID, "name": FIRMA, "status": "lead"}]}
         if name == "am_acos_knowledge_list":
-            return {"objects": list(WISSEN), "truncated": False}
+            eigene = [{"id": k, "kind": o["kind"], "title": o["title"], "updated_at": "2026-11-17T10:00:00Z"}
+                      for k, o in OBJEKTE.items() if o["client_id"] == (args or {}).get("client_id")]
+            if (args or {}).get("kind"):
+                return {"objects": [o for o in eigene if o["kind"] == args["kind"]], "truncated": False}
+            return {"objects": list(WISSEN) + eigene, "truncated": False}
         if name == "am_acos_artifact_specs_list":
             return {"count": len(SPECS), "specs": list(SPECS)}
         if name == "am_acos_context_pack":
@@ -63,11 +69,26 @@ class MockMcp:
                     {"input": {"type": "intelligence", "kind": "visibility_index"}, "required": False}]
             return {"gaps": gaps if args.get("slug") == "mandatsstart-analyse" else []}
         if name == "am_acos_knowledge_get":
+            if args.get("id") in OBJEKTE:
+                return {"id": args["id"], "data": OBJEKTE[args["id"]]["data"]}
             return {"id": args.get("id"), "data": {"markdown": "Analyse (fiktiv)"}}
         raise AssertionError("unerwarteter Lesezugriff: " + name)
     def aendern(self, name, args):
         GEAENDERT.append((name, args))
+        if name == "am_acos_knowledge_save":
+            if not ACOS_AUS["an"]:
+                raise RuntimeError("ACOS antwortet nicht")
+            oid = f"obj-{len(OBJEKTE) + 1}"
+            OBJEKTE[oid] = {"kind": args["kind"], "title": args["title"], "data": args["data"], "client_id": args["client_id"]}
+            return {"status": "created", "id": oid, "kind": args["kind"]}
         return {"id": CID}
+
+def rueckfrage(aid, status, text):
+    OBJEKTE[f"rf-{aid}"] = {"kind": "crm_rueckfrage", "title": f"Rückfrage {aid}", "client_id": CID,
+                            "data": {"auftrags_id": aid, "status": status, "text": text}}
+
+def auftragsobjekt(aid):
+    return next((o for o in OBJEKTE.values() if o["kind"] == "crm_auftrag" and aid in o["title"]), None)
 
 class MockAblage:
     def __init__(self, basis_pfad=None): self.b = "auftraege" if basis_pfad else "kunden"
@@ -142,10 +163,10 @@ try:
     modus["scharf"] = True
     pruef("Thema ohne Inhalt abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": "  "}), "Thema"))
     pruef("Firmenname im Thema abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": f"Markt von {FIRMA}"}), "Unternehmensnamen"))
-    ORDNER.discard(("auftraege", ""))
-    pruef("Fehlender Auftragsordner: verstaendliche Meldung, kein Auftrag", wirft(lambda: auf.uebergeben(t, {"thema": "Markt"}), "fehlt in der Nextcloud")
-          and not core._q("SELECT 1 FROM acos_auftraege WHERE task_id=%s", (t,)))
-    ORDNER.add(("auftraege", ""))
+    ACOS_AUS["an"] = False
+    pruef("ACOS nicht erreichbar: verstaendliche Meldung, Auftrag als Fehler", wirft(lambda: auf.uebergeben(t, {"thema": "Markt"}), "nicht in ACOS angelegt")
+          and core._q1("SELECT status FROM acos_auftraege WHERE task_id=%s", (t,))["status"] == "fehler")
+    ACOS_AUS["an"] = True
 
     # ── Vorpruefung ──
     v = auf.vorpruefung_firma(fid)
@@ -158,13 +179,15 @@ try:
     a1 = d["aktiv"]
     pruef("Auftrag AUF-JJJJ-NNNN, Stufe 'bei ACOS'", a1["auftrags_id"].startswith("AUF-") and a1["status"] == "uebergeben" and a1["stufe"] == 2)
     pruef("Gewaehlte Datei vorab an ACOS gesendet", GESENDET == ["Unterlagen/Bilanz.pdf"])
-    datei = DATEIEN[("auftraege", f"offen/{a1['auftrags_id']}.json")]
-    inhalt = json.loads(datei.decode("utf-8"))
-    pruef("Auftragsdatei mit Mandanten-ID, Typ und Thema, ohne Namen", inhalt["acos_client_id"] == CID and inhalt["artefakttyp"] == "mandatsstart-analyse"
-          and FIRMA not in datei.decode("utf-8"))
+    obj = auftragsobjekt(a1["auftrags_id"])
+    pruef("Auftrag als Wissensobjekt crm_auftrag beim Mandanten in ACOS", obj and obj["client_id"] == CID and obj["title"] == f"ACOS-Auftrag {a1['auftrags_id']}")
+    pruef("Auftragsobjekt mit Skill und Thema, ohne Namen", obj["data"]["artefakttyp"] == "mandatsstart-analyse" and "Wettbewerb" in obj["data"]["thema"]
+          and FIRMA not in json.dumps(obj, ensure_ascii=False))
+    pruef("Nichts mehr in der Nextcloud fuer den Auftrag", not any(b == "auftraege" for b, r in DATEIEN))
+    pruef("ID des Auftragsobjekts im CRM", status(a1["auftrags_id"])["auftrag_objekt_id"] == next(k for k, o in OBJEKTE.items() if o is obj))
     tk = aufgabe(t)
     pruef("Aufgabe 'In Bearbeitung', Notizen unveraendert", tk["status"] == "In Bearbeitung" and tk["notes"] == "meine Notiz")
-    pruef("Verlauf statt Notizen", verlauf(t) == ["uebergeben"])
+    pruef("Verlauf statt Notizen (Fehlversuch, dann Uebergabe)", verlauf(t) == ["fehler", "uebergeben"])
     pruef("Status gesperrt solange der Auftrag laeuft", wirft(lambda: core.update_task(t, {"status": "Erledigt"}), "ACOS-Auftrag"))
     core.update_task(t, {"status": "In Bearbeitung", "notes": "meine Notiz, ergaenzt", "title": "Marktumfeld analysieren (neu)"})
     pruef("Speichern mit unveraendertem Status geht weiter", aufgabe(t)["notes"] == "meine Notiz, ergaenzt")
@@ -172,19 +195,20 @@ try:
     pruef("Neuer Auftrag ohne Ergebnis abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": "Anderes"}), "liegt noch bei ACOS"))
 
     # ── Rueckfrage und Antwort ──
-    DATEIEN[("auftraege", f"ergebnis/{a1['auftrags_id']}.json")] = json.dumps(
-        {"auftrags_id": a1["auftrags_id"], "status": "rueckfrage", "text": "Welche Region ist gemeint?"}).encode()
+    rueckfrage(a1["auftrags_id"], "rueckfrage", "Welche Region ist gemeint?")
     acos_sync.abgleich("test")
+    pruef("Auftrags- und Rueckfrage-Objekte nicht als Kundenwissen abgelegt",
+          not core._q("SELECT 1 FROM acos_artefakte WHERE titel LIKE 'ACOS-Auftrag %%' OR titel LIKE 'Rückfrage %%'"))
     pruef("Rueckfrage uebernommen", status(a1["auftrags_id"])["status"] == "rueckfrage")
     pruef("Rueckfrage im Verlauf, Etikett 'Rueckfrage'", verlauf(t)[-1] == "rueckfrage"
           and next(x for x in core.load_tasks() if x["taskId"] == t)["acos"] == "rueckfrage")
     pruef("Antwort ohne Text abgelehnt", wirft(lambda: auf.uebergeben(t, {"antwort": " "}), "beantworten"))
     d = auf.uebergeben(t, {"antwort": "Region Oberbayern"}, "tester")
     a2 = d["aktiv"]
-    inhalt2 = json.loads(DATEIEN[("auftraege", f"offen/{a2['auftrags_id']}.json")].decode("utf-8"))
+    inhalt2 = auftragsobjekt(a2["auftrags_id"])["data"]
     pruef("Antwort: Folgeauftrag mit Thema vom Vorgaenger, alter ersetzt", a2["auftrags_id"] != a1["auftrags_id"]
           and a2["thema"] == a1["thema"] and status(a1["auftrags_id"])["status"] == "ersetzt")
-    pruef("Antwort steht in den Hinweisen der Auftragsdatei", "Oberbayern" in inhalt2["hinweise"] and inhalt2["ersetzt"] == a1["auftrags_id"])
+    pruef("Antwort steht in den Hinweisen des Auftragsobjekts", "Oberbayern" in inhalt2["hinweise"] and inhalt2["ersetzt"] == a1["auftrags_id"])
 
     # ── Ergebnis ──
     WISSEN.append({"id": "w-art-1", "kind": "report", "title": f"Mandatsstart-Analyse [{a2['auftrags_id']}]", "updated_at": "2026-11-17T10:00:00Z"})
@@ -225,14 +249,12 @@ try:
     pruef("Entfallener Skill: laufender Auftrag zeigt weiter den Titel", auf.auftraege_zu_aufgabe(t3)["aktiv"]["typ_text"] == "Executive Summary")
     pruef("Entfallener Skill: neue Uebergabe abgelehnt", wirft(lambda: auf.uebergeben(t2, {"typ": "executive-summary", "thema": "X"}), "nicht"))
     pruef("Fenster: Zeitpunkt des letzten Abgleichs", auf.auftraege_zu_aufgabe(t3)["abgleich"]["zuletzt"] != "")
-    DATEIEN[("auftraege", f"ergebnis/{a_es['auftrags_id']}.json")] = json.dumps(
-        {"auftrags_id": a_es["auftrags_id"], "status": "fehler", "text": "Test"}).encode()
+    rueckfrage(a_es["auftrags_id"], "fehler", "Test")
     acos_sync.abgleich("test")
 
     # ── Fehler von Claude ──
     a3 = auf.uebergeben(t3, {"thema": "Risiken im Markt"}, "tester")["aktiv"]
-    DATEIEN[("auftraege", f"ergebnis/{a3['auftrags_id']}.json")] = json.dumps(
-        {"auftrags_id": a3["auftrags_id"], "status": "fehler", "text": "Website-Profil fehlt"}).encode()
+    rueckfrage(a3["auftrags_id"], "fehler", "Website-Profil fehlt")
     acos_sync.abgleich("test")
     pruef("Fehler: Auftrag 'fehler', Aufgabe wieder 'Offen'", status(a3["auftrags_id"])["status"] == "fehler" and aufgabe(t3)["status"] == "Offen")
     pruef("Nach Fehler neuer Auftrag moeglich", auf.uebergeben(t3, {"thema": "Risiken im Markt"}, "tester")["aktiv"]["status"] == "uebergeben")

@@ -1,59 +1,42 @@
-# ACOS-Aufträge aus dem CRM abarbeiten (Anleitung für Claude am Mac)
+# ACOS-Aufträge aus dem CRM abarbeiten (Anleitung für Claude)
 
-Seit Migration 026 kann im CRM eine Aufgabe eines Mandanten als Auftrag an ACOS übergeben werden.
-Das CRM legt dafür eine Auftragsdatei in der Nextcloud ab. Ronald sagt am Mac
-„arbeite die offenen ACOS-Aufträge ab“, dann gilt dieser Ablauf.
+Seit 17.11.2026 (Variante A, Migration 028) laufen Aufträge vollständig über ACOS, ohne Mac und
+ohne Nextcloud-Ordner. Die geplante Aufgabe „ACOS-Aufträge abarbeiten (Server)“ arbeitet sie
+stündlich ab; von Hand: „arbeite die offenen ACOS-Aufträge ab“.
 
-## Wo die Dateien liegen
+## Wo die Aufträge liegen
 
-Nextcloud `/Arbeitsdateien/Aufträge` (am Mac über den Nextcloud-Client synchronisiert):
+In der ACOS-Kundenakte des Mandanten als Wissensobjekte:
 
-| Ordner | Wer schreibt | Inhalt |
-|---|---|---|
-| `offen/AUF-JJJJ-NNNN.json` | CRM | der Auftrag (nur anlegen, nie ändern) |
-| `ergebnis/AUF-JJJJ-NNNN.json` | Claude | nur bei Rückfrage oder Fehler, als **neue** Datei |
+| Art (`kind`) | Titel | Wer legt an | Inhalt (`data`) |
+|---|---|---|---|
+| `crm_auftrag` | `ACOS-Auftrag AUF-JJJJ-NNNN` | CRM | auftrags_id, acos_client_id, artefakttyp, artefakttyp_titel, thema, hinweise, ggf. ersetzt |
+| `crm_rueckfrage` | `Rückfrage AUF-JJJJ-NNNN` | Claude | auftrags_id, status (`rueckfrage` oder `fehler`), text |
 
-Auftragsdatei (Beispiel, fiktiv):
+Beide Arten sind Betriebsobjekte: Das CRM legt sie nicht als Kundenwissen in der Nextcloud ab, und sie
+erscheinen nicht im Kontext der Skills. Sie enthalten keine Namen.
 
-```json
-{
-  "auftrags_id": "AUF-2026-0007",
-  "erstellt_am": "2026-11-17T10:15:00+01:00",
-  "acos_client_id": "<ID des ACOS-Mandanten>",
-  "artefakttyp": "mandatsstart-analyse",
-  "artefakttyp_titel": "Mandatsstart-Analyse",
-  "thema": "Wettbewerbsumfeld im regionalen Markt",
-  "hinweise": "",
-  "anweisung": "…"
-}
-```
+## Offen ist ein Auftrag, wenn
 
-Die Datei enthält keinen Mandantennamen. Ein Folgeauftrag (Antwort auf eine Rückfrage oder
-Nachbesserung) trägt zusätzlich `"ersetzt": "<alte Auftrags-ID>"`; die Antwort steht dann in `hinweise`. Erledigt ist ein Auftrag, wenn es in ACOS ein Artefakt mit
-seiner Auftrags-ID im Titel gibt oder unter `ergebnis/` eine Datei mit seiner ID liegt.
+- es kein Artefakt beim Mandanten gibt, dessen Titel die Auftrags-ID enthält,
+- es kein `crm_rueckfrage`-Objekt mit der Auftrags-ID gibt und
+- kein anderer Auftrag `"ersetzt": "<diese ID>"` trägt.
+
+Offene Aufträge findet `am_acos_knowledge_list` mit `kind: "crm_auftrag"` ohne Mandant (organisationsweit).
 
 ## Ablauf je Auftrag
 
-1. Offene Aufträge finden: alle Dateien in `offen/`, zu denen es weder ein ACOS-Artefakt mit der ID im
-   Titel (`am_acos_knowledge_list` mit `client_id`) noch eine Datei in `ergebnis/` gibt.
-2. Skill **mandantenfiles** anwenden, `datenschutz: "stealth"`, Mandant nur über `acos_client_id`.
-   Fehlende Unterlagen zieht das CRM bei der Übergabe selbst nach; trotzdem kurz prüfen.
-3. Vorlage laden (`am_acos_artifact_specs_get`, Slug aus `artefakttyp`), Voraussetzungen prüfen
-   (Mandatsstart-Analyse braucht Stammdaten und das Website-Profil).
-4. Artefakt erstellen und mit `am_acos_artifact_save` speichern:
-   - `slug` = `artefakttyp`, `client_id` = `acos_client_id`
-   - Titel **mit Auftrags-ID in eckigen Klammern**, ohne Mandantennamen, z. B.
-     `Mandatsstart-Analyse [AUF-2026-0007]`
-   - Thema und Hinweise aus der Auftragsdatei berücksichtigen, Platzhalter (PERSON_…) unverändert lassen.
-5. Fehlt etwas Wesentliches oder ist das Thema unklar: **kein** Artefakt speichern, sondern
-   `ergebnis/AUF-JJJJ-NNNN.json` neu anlegen:
-   `{"auftrags_id": "AUF-2026-0007", "status": "rueckfrage", "text": "Welche Region ist gemeint?"}`
-   Bei einem technischen Problem `"status": "fehler"`.
-6. Nichts überschreiben, nichts löschen – weder in der Nextcloud noch in ACOS.
+1. Skill **mandantenfiles**, jeder ACOS-Aufruf mit `datenschutz: "stealth"`, Mandant nur über die Nummer.
+2. Skill-Vorgabe (`am_acos_artifact_specs_get`, slug = `artefakttyp`) und `am_acos_context_pack` laden.
+3. Rückfrage statt Artefakt, wenn ein Pflicht-Input fehlt, das Thema unklar ist oder kostenpflichtige
+   Recherchen nötig wären, die die Hinweise nicht ausdrücklich freigeben. Rückfragen als Entweder-oder
+   mit vorgegebenen Antworten formulieren, nicht als Ja-Nein-Frage.
+4. Sonst Artefakt nach der Vorgabe, nur aus ACOS-Daten, gespeichert mit `am_acos_artifact_save`,
+   Titel `<Kurztitel> [AUF-JJJJ-NNNN]` ohne Namen.
+5. Nichts überschreiben, archivieren oder löschen.
 
-## Was danach im CRM passiert
+## Im CRM danach
 
-Ronald klickt in der Aufgabe auf „Bei ACOS nachsehen“ (oder der Abgleich um 6:30 läuft):
-Das CRM legt das Artefakt unter `<Kunde>/ACOS/Wissen` ab (von dort ins Kundenwissen, stündlich),
-setzt den Auftrag auf „Ergebnis da“, die Aufgabe auf „Bearbeitet“, schreibt Verlauf und Journal.
+„Bei ACOS nachsehen“ (oder der Abgleich um 6:30): Ergebnis → `<Kunde>/ACOS/Wissen`, Kundenwissen,
+Aufgabe „Bearbeitet“, Verlauf, Journal. Rückfrage → steht in der Aufgabe, Antwort legt den Folgeauftrag an.
 Abschließen nur Ronald mit „Geprüft, Aufgabe abschließen“.

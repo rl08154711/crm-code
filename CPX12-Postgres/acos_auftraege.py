@@ -2,19 +2,19 @@
 """
 acos_auftraege.py – Aufgabe als Auftrag an ACOS (Migration 026/027, 2026-11-17)
 ===============================================================================
-Ablauf:
-  1. Im Aufgabenfenster "Von ACOS bearbeiten lassen" -> "Speichern und übergeben": das CRM legt
-     die Auftragsdatei AUF-JJJJ-NNNN.json in der Nextcloud ab (<Aufträge>/offen/, nur anlegen).
-     Die Datei enthaelt nur die ACOS-Mandanten-ID, den Artefakttyp und das Thema - keine Namen.
-  2. Claude arbeitet den Auftrag am Mac ueber ACOS ab (Stealth) und speichert das Artefakt mit
-     der Auftrags-ID im Titel. Bei Rueckfrage oder Fehler legt Claude eine NEUE Datei
-     <Aufträge>/ergebnis/AUF-JJJJ-NNNN.json an.
+Ablauf (Variante A, 17.11.2026 - reine Serverloesung, ACOS als Briefkasten):
+  1. Im Aufgabenfenster "Von ACOS bearbeiten lassen" -> "Speichern und übergeben": das CRM legt in
+     der ACOS-Kundenakte ein Wissensobjekt der Art 'crm_auftrag' an, Titel "ACOS-Auftrag AUF-JJJJ-NNNN".
+     Es enthaelt nur Skill, Thema und Hinweise - keine Namen.
+  2. Eine geplante Claude-Aufgabe (Cloud, ohne Mac) liest offene Auftraege aus ACOS (Stealth) und
+     speichert das Artefakt mit der Auftrags-ID im Titel. Bei Rueckfrage oder Fehler legt sie ein
+     Wissensobjekt der Art 'crm_rueckfrage' an, Titel "Rückfrage AUF-JJJJ-NNNN", data {status, text}.
   3. Der ACOS-Abgleich legt das Artefakt in <Kunde>/ACOS/Wissen ab und ruft nachlauf() auf:
      Auftrag -> "bearbeitet", Aufgabe -> "Bearbeitet", Verlauf, Journal.
   4. Abschliessen nur ueber "Geprueft, Aufgabe abschliessen" (abschliessen()).
 Solange ein Auftrag laeuft, steuert er den Status der Aufgabe (update_task lehnt Aenderungen ab).
 Die automatischen Hinweise stehen im Verlauf (acos_auftrag_verlauf), nicht in den Notizen.
-Nextcloud: nur lesen und neu anlegen. ACOS: es wird hier nichts geschrieben.
+Nextcloud: nur lesen (Kundenordner-Pruefung). ACOS: nur das Auftragsobjekt wird angelegt, nichts geaendert oder geloescht.
 """
 
 import json
@@ -43,12 +43,14 @@ STATUS_TEXT = {
     "ersetzt": "ersetzt",
 }
 STUFE = {"uebergeben": 2, "rueckfrage": 2, "bearbeitet": 3, "erledigt": 4}
-ANWEISUNG = ("Auftrag aus dem CRM. Skill mandantenfiles, datenschutz stealth, Mandant nur über acos_client_id. "
+AUFTRAG_ART, RUECKFRAGE_ART = "crm_auftrag", "crm_rueckfrage"
+INTERNE_ARTEN = (AUFTRAG_ART, RUECKFRAGE_ART)   # nie als Kundenwissen in die Nextcloud ablegen
+ANWEISUNG = ("Auftrag aus dem CRM. Skill mandantenfiles, datenschutz stealth, Mandant über die Kundenakte dieses Objekts. "
              "Artefakt nach der Vorlage 'artefakttyp' erstellen und mit am_acos_artifact_save speichern; der Titel "
              "MUSS die Auftrags-ID in eckigen Klammern enthalten, z. B. 'Mandatsstart-Analyse [AUF-2026-0007]', "
-             "und keinen Mandantennamen. Platzhalter unverändert lassen. Bei Rückfrage oder Fehler eine NEUE Datei "
-             "ergebnis/<auftrags_id>.json mit {auftrags_id, status: rueckfrage|fehler, text} anlegen. "
-             "Nichts überschreiben oder löschen.")
+             "und keinen Mandantennamen. Platzhalter unverändert lassen. Bei Rückfrage oder Fehler ein Wissensobjekt "
+             "kind 'crm_rueckfrage', Titel 'Rückfrage <auftrags_id>', data {auftrags_id, status: rueckfrage|fehler, text} "
+             "beim selben Mandanten anlegen. Nichts überschreiben, archivieren oder löschen.")
 
 
 def _voraussetzung_text(inp):
@@ -170,21 +172,6 @@ def abgleich_stand():
                     FROM acos_laeufe""")
     return {"zuletzt": r["zuletzt"].astimezone().strftime("%d.%m. %H:%M") if r and r["zuletzt"] else "",
             "laeuft": bool(r and r["laeuft"])}
-
-
-def auftraege_basis():
-    """Ordner der Auftragsdateien in der Nextcloud, relativ zum Nutzer (ohne fuehrenden /)."""
-    try:
-        import wissen_sync
-        pfad = wissen_sync.lade_zugang().get("AUFTRAEGE_PFAD") or ""
-    except Exception:
-        pfad = ""
-    return (pfad or "Arbeitsdateien/Aufträge").strip("/")
-
-
-def _ablage():
-    import acos_sync
-    return acos_sync.Ablage(auftraege_basis())
 
 
 def _modus_scharf():
@@ -386,15 +373,11 @@ def uebergeben(task_id, body, username=None):
         raise ValueError("ACOS steht auf Trockenlauf – es wird nichts geschrieben. Modus in den Einstellungen auf scharf stellen.")
 
     try:
-        ablage = _ablage()
-        ordner_da = ablage.gibt_es("")
-    except acos_sync.AcosFehler as e:
-        raise ValueError(str(e))
+        mcp = _mcp()
+    except ValueError:
+        raise
     except Exception as e:
-        raise ValueError(f"Nextcloud nicht erreichbar ({e.__class__.__name__}). Bitte später noch einmal versuchen.")
-    if not ordner_da:
-        raise ValueError(f"Der Ordner /{auftraege_basis()} fehlt in der Nextcloud. Bitte dort in der Weboberfläche "
-                         "anlegen und dann noch einmal übergeben.")
+        raise ValueError(f"ACOS nicht erreichbar ({e.__class__.__name__}). Bitte später noch einmal versuchen.")
 
     # fehlende Dateien aus dem Kundenordner vorher an ACOS senden (nur die angehakten)
     gesendet = []
@@ -403,7 +386,6 @@ def uebergeben(task_id, body, username=None):
         gesendet.append(pfad)
 
     aid = _next_auftrags_id()
-    datei_rel = f"offen/{aid}.json"
     inhalt = {"auftrags_id": aid, "erstellt_am": _jetzt().isoformat(timespec="seconds"),
               "acos_client_id": v["acos_client_id"], "artefakttyp": typ, "artefakttyp_titel": typ_titel(typ),
               "thema": thema, "hinweise": hinweise, "anweisung": ANWEISUNG}
@@ -411,18 +393,22 @@ def uebergeben(task_id, body, username=None):
         inhalt["ersetzt"] = ersetzt["auftrags_id"]
     core._x("""INSERT INTO acos_auftraege (auftrags_id, task_id, firma_id, acos_client_id, artefakttyp, thema,
                                           status, auftragsdatei, angelegt_von)
-               VALUES (%s,%s,%s,%s,%s,%s,'uebergeben',%s,%s)""",
-            (aid, task_id, t["firma_id"], v["acos_client_id"], typ, thema,
-             f"{auftraege_basis()}/{datei_rel}", username))
+               VALUES (%s,%s,%s,%s,%s,%s,'uebergeben',NULL,%s)""",
+            (aid, task_id, t["firma_id"], v["acos_client_id"], typ, thema, username))
     try:
-        ablage.ordner("offen")
-        ablage.datei(datei_rel, json.dumps(inhalt, ensure_ascii=False, indent=2).encode("utf-8"))
+        antwort = mcp.aendern("am_acos_knowledge_save", {
+            "client_id": v["acos_client_id"], "kind": AUFTRAG_ART, "title": f"ACOS-Auftrag {aid}",
+            "source": "CRM Digitale Konzepte, Aufgabe als Auftrag an ACOS", "data": inhalt})
+        objekt_id = str((antwort or {}).get("id") or "") if isinstance(antwort, dict) else ""
+        if not objekt_id:
+            raise ValueError("ACOS hat keine ID für das Auftragsobjekt geliefert")
     except Exception as e:
         fehler = f"{e.__class__.__name__}: {e}"[:300]
         core._x("UPDATE acos_auftraege SET status='fehler', meldung=%s, geaendert_am=now() WHERE auftrags_id=%s", (fehler, aid))
-        _verlauf(task_id, aid, "fehler", f"Auftragsdatei konnte nicht abgelegt werden ({fehler})")
-        raise ValueError(f"Die Auftragsdatei konnte nicht in der Nextcloud abgelegt werden ({fehler}).")
-    core._x("UPDATE acos_auftraege SET uebergeben_am=now(), geaendert_am=now() WHERE auftrags_id=%s", (aid,))
+        _verlauf(task_id, aid, "fehler", f"Auftrag konnte nicht in ACOS angelegt werden ({fehler})")
+        raise ValueError(f"Der Auftrag konnte nicht in ACOS angelegt werden ({fehler}).")
+    core._x("""UPDATE acos_auftraege SET uebergeben_am=now(), geaendert_am=now(), auftrag_objekt_id=%s,
+                      auftragsdatei=%s WHERE auftrags_id=%s""", (objekt_id, f"ACOS {objekt_id}", aid))
     if ersetzt:
         core._x("""UPDATE acos_auftraege SET status='ersetzt', ersetzt_durch=%s, geaendert_am=now()
                    WHERE auftrags_id=%s""", (aid, ersetzt["auftrags_id"]))
@@ -461,44 +447,40 @@ def etiketten(task_ids):
     return {r["task_id"]: r["status"] for r in rows if r["status"] in OFFEN}
 
 
-def _ergebnisdateien(notiz):
-    """Rueckfragen und Fehler, die Claude als neue Datei unter ergebnis/ abgelegt hat."""
+def _rueckfragen(notiz, mcp):
+    """Rueckfragen und Fehler, die Claude als Wissensobjekt 'crm_rueckfrage' in ACOS angelegt hat."""
     offene = core._q("SELECT * FROM acos_auftraege WHERE status='uebergeben'")
-    if not offene:
+    if not offene or mcp is None:
         return 0
-    try:
-        ablage = _ablage()
-        if not ablage.gibt_es("ergebnis"):
-            return 0
-        _, dateien = ablage.ordner_inhalt("ergebnis")
-    except Exception as e:
-        notiz("Aufträge", "hinweis", f"Ergebnisordner nicht lesbar ({e.__class__.__name__})")
-        return 0
-    namen = {d["name"] for d in dateien}
+    import acos_sync
     n = 0
-    for a in offene:
-        name = f"{a['auftrags_id']}.json"
-        if name not in namen:
-            continue
+    for cid in sorted({a["acos_client_id"] for a in offene}):
         try:
-            roh, _ = ablage.hole(f"ergebnis/{name}", 100_000)
-            d = json.loads(roh.decode("utf-8"))
-        except Exception as e:
-            core._x("UPDATE acos_auftraege SET meldung=%s, geaendert_am=now() WHERE id=%s",
-                    (f"Ergebnisdatei nicht lesbar: {e.__class__.__name__}", a["id"]))
+            objekte = acos_sync._liste(mcp.lesen("am_acos_knowledge_list", {"client_id": cid, "kind": RUECKFRAGE_ART, "limit": 200}))
+        except Exception as e:  # noqa: BLE001
+            notiz("Aufträge", "hinweis", f"Rückfragen nicht lesbar ({e.__class__.__name__})")
             continue
-        status = d.get("status")
-        text = " ".join(str(d.get("text") or "").split())[:1500]
-        if status == "rueckfrage":
-            core._x("UPDATE acos_auftraege SET status='rueckfrage', rueckfrage=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
-            _verlauf(a["task_id"], a["auftrags_id"], "rueckfrage", f"Rückfrage von ACOS: {text}")
-        elif status == "fehler":
-            core._x("UPDATE acos_auftraege SET status='fehler', meldung=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
-            _verlauf(a["task_id"], a["auftrags_id"], "fehler", f"ACOS konnte den Auftrag nicht bearbeiten: {text}")
-            _task_status(a["task_id"], "Offen")
-        else:
-            continue
-        n += 1
+        for a in [x for x in offene if x["acos_client_id"] == cid]:
+            treffer = next((o for o in objekte if a["auftrags_id"] in str(o.get("title") or o.get("titel") or "")), None)
+            if not treffer:
+                continue
+            try:
+                g = mcp.lesen("am_acos_knowledge_get", {"id": treffer.get("id")})
+                d = (g or {}).get("data") or {}
+            except Exception as e:  # noqa: BLE001
+                core._x("UPDATE acos_auftraege SET meldung=%s, geaendert_am=now() WHERE id=%s",
+                        (f"Rückfrage nicht lesbar: {e.__class__.__name__}", a["id"]))
+                continue
+            status = d.get("status") or "rueckfrage"
+            text = " ".join(str(d.get("text") or "").split())[:1500]
+            if status == "fehler":
+                core._x("UPDATE acos_auftraege SET status='fehler', meldung=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
+                _verlauf(a["task_id"], a["auftrags_id"], "fehler", f"ACOS konnte den Auftrag nicht bearbeiten: {text}")
+                _task_status(a["task_id"], "Offen")
+            else:
+                core._x("UPDATE acos_auftraege SET status='rueckfrage', rueckfrage=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
+                _verlauf(a["task_id"], a["auftrags_id"], "rueckfrage", f"Rückfrage von ACOS: {text}")
+            n += 1
     return n
 
 
@@ -532,12 +514,12 @@ def _artefakte_zuordnen(notiz):
     return n
 
 
-def nachlauf(notiz=lambda *a, **k: None):
+def nachlauf(notiz=lambda *a, **k: None, mcp=None):
     """Wird am Ende von acos_sync.abgleich() aufgerufen (scharfer Lauf). Darf den Abgleich nie stoeren."""
     try:
         if not core._tabelle_da("acos_auftraege"):
             return {"rueckmeldungen": 0, "ergebnisse": 0}
-        return {"rueckmeldungen": _ergebnisdateien(notiz), "ergebnisse": _artefakte_zuordnen(notiz)}
+        return {"rueckmeldungen": _rueckfragen(notiz, mcp), "ergebnisse": _artefakte_zuordnen(notiz)}
     except Exception as e:  # noqa: BLE001
         notiz("Aufträge", "fehler", f"Aufträge konnten nicht abgeglichen werden ({e.__class__.__name__}: {e})"[:300])
         return {"rueckmeldungen": 0, "ergebnisse": 0}
