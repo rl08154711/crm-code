@@ -500,3 +500,59 @@ systemctl restart crm && sleep 3 && systemctl is-active crm
 ```
 
 Rückweg: `cp /root/crm-code-vor-feinschliff/* /opt/crm/ && chown crmapp:crmapp /opt/crm/*.py && systemctl restart crm`.
+
+## 2026-11-20 – ACOS-Aufträge automatisch: Takt, Meldungen, Übergabe beim Anlegen (Migration 029, live 2026-11-20)
+
+Anlass: Der Weg Aufgabe → ACOS → Ergebnis war zeitlich nicht schlüssig. Rückfragen kamen erst mit dem Abgleich um 6:30 Uhr
+oder nach „Bei ACOS nachsehen“.
+
+| Punkt | Was sich ändert |
+|---|---|
+| 1 | Akte → „＋ Aufgabe“: Ist das Unternehmen mit ACOS verknüpft, gibt es „Von ACOS bearbeiten lassen“ mit Skill, Thema (ohne Namen), Hinweisen, Voraussetzungen und Vorprüfung des Kundenordners. Der Knopf heißt dann „Anlegen und an ACOS übergeben“. Klappt die Übergabe nicht, bleibt die Aufgabe angelegt und lässt sich im Aufgabenfenster erneut übergeben. Im Dialog „＋ Aufgabe“ auf Heute gab es die Box schon. |
+| 2 | `crm-acos.timer` läuft jede Minute und ruft `acos_sync.py takt` auf. Das prüft, ob etwas fällig ist. **Auftragsprüfung:** nur wenn ein Auftrag bei ACOS liegt (Status „übergeben“) und nur für diese Mandanten. Takt in den Einstellungen: 2/5/10/15/30 Minuten oder aus, Standard 5. **Voller Abgleich:** täglich zur eingestellten Uhrzeit (Standard 06:30) oder stündlich. Schnelle Prüfungen werden zwei Tage aufbewahrt und erscheinen nicht in der Liste der Abgleiche. Dort steht stattdessen „Zuletzt geprüft“. |
+| 3 | „Bei ACOS nachsehen“ entfällt. Das Aufgabenfenster zeigt „Das CRM prüft automatisch alle N Minuten“. Neue Verlaufsart `in_acos` („Ergebnis liegt in ACOS“) im selben Lauf vor „In der Nextcloud abgelegt“. Rückfrage, Ergebnis in ACOS und „abgelegt“ erscheinen als Meldung oben in „Im Blick“ und einmal je Sitzung als Einblendung unten rechts. Die Seite fragt `/api/acos/meldungen` jede Minute ab (nur Datenbank, kein ACOS-Abruf). Gesehen: Klick auf „Gesehen“ oder Öffnen der Aufgabe. |
+
+Migration 029: Spalte `acos_auftrag_verlauf.gesehen_am`. Bestehende Einträge gelten als gesehen.
+
+Getestet gegen `crm_test` mit Migrationen 002–029 und fiktiven Daten:
+
+| Prüfung | Ergebnis |
+|---|---|
+| `smoke_test.py` | grün |
+| `test_acos_auftraege.py` | 61/61 (+3: Verlauf in_acos vor bearbeitet, Meldungen, Takt-Text) |
+| neu `test_acos_automatik.py` | 33/33 (Einstellungen, Fälligkeit, takt(), Meldungen, Aufräumen) |
+| `test_acos_verweis.py` | 14/14 |
+| `test_acos_verweis_ablage.py` | 14/14 |
+| `test_kundenwissen_acos.py` | 11/11 |
+| `test_firma_umbenennen.py` | 11/11 |
+| `test_schnellauswahl.py` | 19/19 |
+| `test_oberflaeche_feinschliff.py` | 21/21 |
+| Browser | 29 Klickprüfungen grün, ACOS-Ablauf durchgeklickt, keine JavaScript-Fehler |
+
+Prüfsummen neu:
+
+| Datei | sha1 |
+|---|---|
+| crm_core.py | 4795d8be335b6ae29f170b6f40a4ec802968ac1d |
+| crm_serve.py | e86d8bf14fc77d0f115fcd278d64acabf064ef04 |
+| acos_sync.py | e3aaa985ecf8b96684c8e5b4f60b704ec08ba4fd |
+| acos_auftraege.py | d3c0d175b1fc17f684dadd7c5583af220c8c8910 |
+| crm-acos.timer | ff00a16763d9e36b3472acf544253de44eac57c9 |
+| crm-acos.service | 33a80b4bfe27c639077def850e6d0fd7a7bcee51 |
+| migration_029_acos_meldungen.sql | 1ea3c2a5c66325482fe90dbb2f8eb610a323f07a |
+
+Live vorher (Stand 20.11.):
+
+| Datei | sha1 |
+|---|---|
+| crm_core.py | 73e15005… |
+| crm_serve.py | 6c19f897… |
+| acos_sync.py | 77b04b7c… |
+| acos_auftraege.py | 1be9e458… |
+
+Sicherung: `/root/crm-code-vor-acos-takt/`.
+Rückweg: Dateien von dort zurückkopieren, `daemon-reload`, `systemctl restart crm crm-acos.timer`. Die Spalte aus 029 stört den alten Code nicht.
+
+Danach: In der geplanten Aufgabe „ACOS-Aufträge abarbeiten (Server)“ den Schlusssatz „Bei ACOS nachsehen“ ersetzen.
+
+**Live 2026-11-20:** Migration 029 eingespielt, Timer im Minutentakt läuft fehlerfrei, Prüfsummen bestätigt.

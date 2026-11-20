@@ -193,6 +193,9 @@ class CRMHandler(BaseHTTPRequestHandler):
                 q = parse_qs(urlparse(self.path).query)
                 fid = (q.get("firma_id", [""])[0]).strip()
                 self._send_json(acos_auftraege.voraussetzungen(int(fid) if fid.isdigit() else None, (q.get("typ", [""])[0]).strip()))
+            elif path == "/api/acos/meldungen":
+                import acos_auftraege
+                self._send_json(acos_auftraege.meldungen())
             elif path in ("/api/acos/auftrag-optionen", "/api/acos/vorpruefung"):
                 # Aufgabenfenster: kann fuer dieses Unternehmen ein ACOS-Auftrag angelegt werden? (Migration 027)
                 import acos_auftraege
@@ -512,6 +515,10 @@ class CRMHandler(BaseHTTPRequestHandler):
                 return
             elif path == "/api/wissen/abgleich":
                 self._send_json(core.wissen_abgleich_starten(self._current_user()))
+                return
+            elif path == "/api/acos/meldungen/gesehen":
+                import acos_auftraege
+                self._send_json(acos_auftraege.meldungen_gesehen(body))
                 return
             elif path == "/api/acos/abgleich":
                 self._send_json(core.acos_abgleich_starten(self._current_user()))

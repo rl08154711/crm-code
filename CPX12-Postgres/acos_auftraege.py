@@ -281,7 +281,7 @@ def auftraege_zu_aufgabe(task_id):
                     "art": r["art"], "text": r["text"]}
                    for r in core._q("SELECT * FROM acos_auftrag_verlauf WHERE task_id=%s ORDER BY id DESC", (task_id,))]
     return dict(o, aktiv=_auftrag_dict(akt) if akt else None, auftraege=[_auftrag_dict(r) for r in rows],
-                verlauf=verlauf, task_status=t["status"], abgleich=abgleich_stand())
+                verlauf=verlauf, task_status=t["status"], abgleich=abgleich_stand(), takt=takt_text())
 
 
 def _klartext_pruefen(text, firma):
@@ -494,15 +494,18 @@ def _artefakte_zuordnen(notiz):
                         ORDER BY (status='abgelegt') DESC, id DESC LIMIT 1""", (a["firma_id"], a["auftrags_id"]))
         if not r:
             continue
+        if not core._q1("SELECT 1 FROM acos_auftrag_verlauf WHERE auftrags_id=%s AND art='in_acos'", (a["auftrags_id"],)):
+            _verlauf(a["task_id"], a["auftrags_id"], "in_acos", f"Ergebnis liegt in ACOS: „{r['titel']}“")
+            notiz("Aufträge", "hinweis", f"{a['auftrags_id']}: Ergebnis in ACOS")
         if r["status"] != "abgelegt":
             core._x("UPDATE acos_auftraege SET meldung=%s, geaendert_am=now() WHERE id=%s",
-                    ("Ergebnis ist in ACOS, die Kopie in die Nextcloud steht noch aus.", a["id"]))
+                    ("Ergebnis liegt in ACOS, die Kopie in die Nextcloud folgt automatisch.", a["id"]))
             continue
         core._x("""UPDATE acos_auftraege SET status='bearbeitet', acos_artefakt_id=%s, acos_link=%s, nextcloud_pfad=%s,
                           meldung=NULL, rueckfrage=NULL, bearbeitet_am=now(), geaendert_am=now() WHERE id=%s""",
                 (r["acos_id"], r["acos_link"], r["nextcloud_pfad"], a["id"]))
         _verlauf(a["task_id"], a["auftrags_id"], "bearbeitet",
-                 f"Ergebnis von ACOS: „{r['titel']}“, abgelegt unter /{r['nextcloud_pfad']} und im Kundenwissen")
+                 f"In der Nextcloud abgelegt: /{r['nextcloud_pfad']} – auch im Kundenwissen. Bitte prüfen und abschließen.")
         _task_status(a["task_id"], "Bearbeitet")
         _journal(a["firma_id"], f"ACOS-Ergebnis zu {a['auftrags_id']}: {r['titel']}",
                  f"Auftrag aus Aufgabe {a['task_id']} ({typ_titel(a['artefakttyp'])}) von ACOS bearbeitet. "
@@ -512,6 +515,41 @@ def _artefakte_zuordnen(notiz):
         notiz("Aufträge", "ablage", f"{a['auftrags_id']}: Ergebnis zugeordnet, Aufgabe {a['task_id']} auf Bearbeitet")
         n += 1
     return n
+
+
+MELDE_ARTEN = ("rueckfrage", "fehler", "in_acos", "bearbeitet")
+MELDE_TITEL = {"rueckfrage": "Rückfrage von ACOS", "fehler": "ACOS: Fehler", "in_acos": "Ergebnis liegt in ACOS",
+               "bearbeitet": "In der Nextcloud abgelegt"}
+
+def meldungen():
+    """Ungesehene Meldungen zu Auftraegen (Migration 029) fuer Heute und die Einblendung."""
+    if not core._spalte_da("acos_auftrag_verlauf", "gesehen_am"):
+        return []
+    rows = core._q("""SELECT v.id, v.task_id, v.auftrags_id, v.art, v.text, v.zeit, t.title, f.name AS firma, f.id AS firma_id
+                      FROM acos_auftrag_verlauf v LEFT JOIN tasks t ON t.task_id = v.task_id
+                      LEFT JOIN acos_auftraege a ON a.auftrags_id = v.auftrags_id
+                      LEFT JOIN firmen f ON f.id = a.firma_id
+                      WHERE v.gesehen_am IS NULL AND v.art = ANY(%s) ORDER BY v.id DESC LIMIT 20""", (list(MELDE_ARTEN),))
+    return [{"id": r["id"], "taskId": r["task_id"], "auftrags_id": r["auftrags_id"] or "", "art": r["art"],
+             "titel": MELDE_TITEL.get(r["art"], r["art"]), "text": r["text"], "aufgabe": r["title"] or "",
+             "firma": r["firma"] or "", "firmaId": str(r["firma_id"] or ""),
+             "zeit": r["zeit"].astimezone().strftime("%d.%m. %H:%M")} for r in rows]
+
+def meldungen_gesehen(body):
+    """body: {"ids": [...]} oder {"task_id": "..."} (Aufgabenfenster geoeffnet)."""
+    if not core._spalte_da("acos_auftrag_verlauf", "gesehen_am"):
+        return {"ok": True}
+    if body.get("task_id"):
+        core._x("UPDATE acos_auftrag_verlauf SET gesehen_am=now() WHERE task_id=%s AND gesehen_am IS NULL", (str(body["task_id"]),))
+    ids = [int(x) for x in (body.get("ids") or []) if str(x).isdigit()]
+    if ids:
+        core._x("UPDATE acos_auftrag_verlauf SET gesehen_am=now() WHERE id = ANY(%s) AND gesehen_am IS NULL", (ids,))
+    return {"ok": True}
+
+def takt_text():
+    import acos_sync
+    e = acos_sync.takt_einstellungen()
+    return f"prüft automatisch alle {e['auftrag_takt']} Minuten" if e["auftrag_takt"] else "automatische Prüfung ist ausgeschaltet"
 
 
 def nachlauf(notiz=lambda *a, **k: None, mcp=None):

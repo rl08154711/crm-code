@@ -572,7 +572,9 @@ def _verkn(firma_id, **felder):
             [firma_id] + werte)
 
 
-def abgleich(ausgeloest_von="timer"):
+def abgleich(ausgeloest_von="timer", nur_firmen=None):
+    """Voller Abgleich; mit nur_firmen (Liste von Firmen-IDs) nur diese - fuer die schnelle
+    Pruefung offener Auftraege (20.11.2026), ohne Skill-Liste."""
     md = modus()
     scharf = md == "scharf"
     lauf = core._x("INSERT INTO acos_laeufe (modus, ausgeloest_von) VALUES (%s,%s) RETURNING id",
@@ -593,10 +595,14 @@ def abgleich(ausgeloest_von="timer"):
         mcp.start()
         # Skill-Liste fuer das Aufgabenfenster (Migration 026/027) - nur lesen, darf den Lauf nicht stoeren
         try:
+            if nur_firmen is not None:
+                raise StopIteration   # schnelle Auftragspruefung: Skill-Liste nicht noetig
             import acos_auftraege
             neu_s, weg_s = acos_auftraege.skills_aus_acos(mcp)
             if neu_s or weg_s:
                 notiz("Skills", "hinweis", f"Skill-Liste aus ACOS: {neu_s} neu, {weg_s} entfallen")
+        except StopIteration:
+            pass
         except Exception as e:  # noqa: BLE001
             notiz("Skills", "hinweis", f"Skill-Liste nicht aktualisiert ({e.__class__.__name__})")
         mandanten = [mandant(c) for c in _liste(mcp.lesen("am_acos_clients_list"))]
@@ -606,8 +612,9 @@ def abgleich(ausgeloest_von="timer"):
             SELECT f.id, f.name, f.status, f.branch, f.address, to_jsonb(f)->>'webseite' AS webseite, f.acos_fuehren, f.archiviert_am,
                    v.zustand, v.acos_client_id, v.anlegen, v.pruefwert
             FROM firmen f LEFT JOIN acos_verknuepfung v ON v.firma_id = f.id
-            WHERE f.acos_fuehren OR v.zustand IN ('vorgeschlagen', 'bestaetigt')
-            ORDER BY f.name""")
+            WHERE (f.acos_fuehren OR v.zustand IN ('vorgeschlagen', 'bestaetigt'))
+              AND (%s::int[] IS NULL OR f.id = ANY(%s::int[]))
+            ORDER BY f.name""", (nur_firmen, nur_firmen))
         belegt = {f["acos_client_id"] for f in firmen if f["zustand"] == "bestaetigt" and f["acos_client_id"]}
 
         ablage, ablage_fehler = None, ""
@@ -822,7 +829,9 @@ def abgleich(ausgeloest_von="timer"):
         log(traceback.format_exc())
     core._x("UPDATE acos_laeufe SET ende=now(), ok=%s, meldung=%s, zahlen=%s, bericht=%s WHERE id=%s",
             (ok, meldung, json.dumps(zahl), json.dumps(bericht, ensure_ascii=False), lauf))
-    core._x("DELETE FROM acos_laeufe WHERE id < %s - 200", (lauf,))
+    # volle Laeufe: die letzten 200; schnelle Auftragspruefungen: 2 Tage
+    core._x("""DELETE FROM acos_laeufe WHERE (ausgeloest_von IS DISTINCT FROM 'auftraege' AND id < %s - 200)
+               OR (ausgeloest_von = 'auftraege' AND start < now() - interval '2 days' AND id <> %s)""", (lauf, lauf))
     return ok
 
 
@@ -856,6 +865,61 @@ def struktur():
         print("am_acos_knowledge_list: bei den ersten Mandanten keine Wissensobjekte gefunden")
 
 
+# ── Takt (20.11.2026): der Timer laeuft jede Minute, hier wird entschieden, was faellig ist ──
+AUFTRAG_TAKTE = (0, 2, 5, 10, 15, 30)       # Minuten, 0 = aus
+
+def takt_einstellungen():
+    w = core._system_raw()
+    t = w.get("acos_auftrag_takt", 5)
+    voll = w.get("acos_voll") or {}
+    return {"auftrag_takt": int(t) if str(t).isdigit() and int(t) in AUFTRAG_TAKTE else 5,
+            "voll_art": voll.get("art") if voll.get("art") in ("taeglich", "stuendlich") else "taeglich",
+            "voll_uhrzeit": voll.get("uhrzeit") if re.fullmatch(r"[0-2]\d:[0-5]\d", str(voll.get("uhrzeit") or "")) else "06:30"}
+
+def _letzter_start(volle=True):
+    bed = "ausgeloest_von IS DISTINCT FROM 'auftraege'" if volle else "ausgeloest_von = 'auftraege'"
+    r = core._q1(f"SELECT max(start) AS t FROM acos_laeufe WHERE {bed}")
+    return r["t"] if r else None
+
+def voll_faellig(jetzt=None):
+    e = takt_einstellungen()
+    jetzt = jetzt or datetime.now().astimezone()
+    letzt = _letzter_start(True)
+    if e["voll_art"] == "stuendlich":
+        return not letzt or (jetzt - letzt).total_seconds() >= 3600 - 30
+    hh, mm = (int(x) for x in e["voll_uhrzeit"].split(":"))
+    soll = jetzt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return jetzt >= soll and (not letzt or letzt < soll)
+
+def offene_auftrags_firmen():
+    """Firmen mit Auftraegen, die bei ACOS liegen (uebergeben, Ergebnis noch nicht abgelegt)."""
+    if not core._tabelle_da("acos_auftraege"):
+        return []
+    return [r["firma_id"] for r in core._q("SELECT DISTINCT firma_id FROM acos_auftraege WHERE status='uebergeben'")]
+
+def auftraege_faellig(jetzt=None):
+    e = takt_einstellungen()
+    if not e["auftrag_takt"] or modus() != "scharf":
+        return []
+    firmen = offene_auftrags_firmen()
+    if not firmen:
+        return []
+    letzt = _letzter_start(False)
+    jetzt = jetzt or datetime.now().astimezone()
+    if letzt and (jetzt - letzt).total_seconds() < e["auftrag_takt"] * 60 - 20:
+        return []
+    return firmen
+
+def takt():
+    """Vom Timer jede Minute: voller Abgleich, wenn faellig, sonst die schnelle Auftragspruefung."""
+    if voll_faellig():
+        return abgleich("timer")
+    firmen = auftraege_faellig()
+    if firmen:
+        return abgleich("auftraege", nur_firmen=firmen)
+    return True
+
+
 def main():
     if "--struktur" in sys.argv:
         struktur()
@@ -868,6 +932,8 @@ def main():
         except BlockingIOError:
             log("Abgleich läuft bereits - beende.")
             return 0
+        if ausgeloest == "takt":
+            return 0 if takt() else 1
         return 0 if abgleich(ausgeloest) else 1
 
 

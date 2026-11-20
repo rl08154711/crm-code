@@ -1204,6 +1204,10 @@ function renderAcosStatus(d){
   stand.innerHTML = `${d.markiert} Unternehmen markiert · ${d.verknuepft} verknüpft · ${d.vorgeschlagen} warten auf deine Bestätigung · Ablage ${_aE(d.ablage)}`
     + (d.eingerichtet ? '' : `<br><span class="acos-warn">⚠️ ${_aE(d.grund)}</span>`);
   document.getElementById('set-acos-modus').value = d.modus;
+  const tk = document.getElementById('set-acos-takt'); if(tk) tk.value = String(d.auftrag_takt);
+  const vo = document.getElementById('set-acos-voll'); if(vo) vo.value = d.voll_art || 'taeglich';
+  const uh = document.getElementById('set-acos-uhr'); if(uh){ uh.value = d.voll_uhrzeit || '06:30'; uh.disabled = (d.voll_art || 'taeglich') !== 'taeglich'; }
+  const lz = document.getElementById('acos-takt-zuletzt'); if(lz) lz.textContent = d.letzte_auftragspruefung ? 'Zuletzt geprüft: ' + d.letzte_auftragspruefung + '.' : '';
   const ab = document.getElementById('acos-ausgeblendet');
   if(ab) ab.innerHTML = (d.ausgeblendet || []).length
     ? 'Ausgeblendete Ordner in Kundenordnern: ' + d.ausgeblendet.map(n=>`<span class="set-badge">${_aE(n)} <button type="button" class="log-delete" title="Wieder anzeigen" onclick="acosOrdnerEinblenden('${_aE(n).replace(/'/g,"\\'")}')">✕</button></span>`).join(' ')
@@ -1229,8 +1233,10 @@ function saveAcosModus(){
      !confirm('ACOS-Abgleich scharf schalten?\n\nAb dem nächsten Lauf legt das CRM bestätigte Mandanten in ACOS an, sendet Stammdaten, archiviert ausgeschaltete Mandanten und legt Wissensobjekte in der Nextcloud ab.')){
     document.getElementById('set-acos-modus').value = 'trocken'; return;
   }
-  api('PUT', '/api/einstellungen/system', { acos_modus: m })
-    .then(()=>{ _sMsg('set-acos-msg', m === 'scharf' ? 'Scharf geschaltet.' : 'Trockenlauf eingestellt.', true); loadAcosStatus(); })
+  api('PUT', '/api/einstellungen/system', { acos_modus: m,
+      acos_auftrag_takt: parseInt(document.getElementById('set-acos-takt').value, 10),
+      acos_voll_art: document.getElementById('set-acos-voll').value, acos_voll_uhrzeit: document.getElementById('set-acos-uhr').value })
+    .then(()=>{ _sMsg('set-acos-msg', 'Gespeichert' + (m === 'scharf' ? ' – scharf.' : ' – Trockenlauf.'), true); loadAcosStatus(); })
     .catch(t=>_sMsg('set-acos-msg', _sErr(t), false));
 }
 function acosAbgleichStarten(){
@@ -1451,7 +1457,8 @@ function _akKontakt(d){
 function akteTab(t){ _AK.tab = t; _AK.menu = false; _AK.form = null; _akMerken(); akteZeichnen(); }
 function akteMenu(){ _AK.menu = !_AK.menu; akteZeichnen(); }
 function akteForm(f){ _AK.form = _AK.form === f ? null : f; _AK.menu = false; akteZeichnen();
-  const el = document.querySelector('#akte-inhalt [data-autofocus]'); if(el) el.focus(); }
+  const el = document.querySelector('#akte-inhalt [data-autofocus]'); if(el) el.focus();
+  if(_AK.form === 'aufgabe') akaAcosLaden(); }
 
 function akteZeichnen(){
   const d = _AK.d, t = _AK.tab;
@@ -1602,9 +1609,10 @@ function _akProjekte(d){
       <label class="ak-feld">Projekt<select id="aka-projekt"><option value="">Ohne Projekt</option>${d.projekte.map(p=>
         `<option value="${_akE(p.id)}">${_akE(p.title)}</option>`).join('')}</select></label>
       <label class="ak-feld">Fällig am<input id="aka-due" type="date"></label>
+      <div class="ak-acos-feld" id="aka-acos" hidden></div>
       <div class="ak-fuss ak-voll"><span class="ak-meldung" id="ak-msg"></span>
         <button type="button" class="ak-btn" onclick="akteForm(null)">Abbrechen</button>
-        <button type="button" class="ak-prim" onclick="akteAufgabeSpeichern()">Anlegen</button></div></div></section>`;
+        <button type="button" class="ak-prim" id="aka-speichern" onclick="akteAufgabeSpeichern()">Anlegen</button></div></div></section>`;
   const erledigt = d.aufgaben.filter(a=>a.status === 'Erledigt').length;
   const ohne = d.aufgaben.filter(a=>!a.projektId && (_AK.erledigtZeigen || a.status !== 'Erledigt'));
   if(ohne.length || !d.projekte.length) h += `<section class="ak-karte"><div class="ak-kz"><h3>Ohne Projekt</h3></div>
@@ -1896,9 +1904,72 @@ function aktePersonSpeichern(){
                  mobil: document.getElementById('akp-mobil').value.trim(), status: _AK.d.status };
   mitDublettenCheck(x=>api('POST', '/api/contacts', Object.assign({}, body, x))).then(()=>{ _AK.form = null; _akListeVeraltet(); return akteLaden(); }).catch(t=>_akMsg(_akFehler(t)));
 }
+// Punkt 1 (20.11.2026): schon beim Anlegen "Von ACOS bearbeiten lassen" mit Skill-Auswahl
+let _AKA = null;
+function akaAcosLaden(){
+  const box = document.getElementById('aka-acos'); if(!box || !_AK || _AK.typ !== 'firma') return;
+  const fid = _AK.id;
+  api('GET', '/api/acos/auftrag-optionen?firma_id=' + encodeURIComponent(fid)).then(d=>{
+    if(!document.getElementById('aka-acos') || !_AK || _AK.id !== fid) return;
+    _AKA = d;
+    if(!d.verfuegbar){ box.hidden = true; return; }
+    box.hidden = false;
+    box.innerHTML = `<label class="ak-pill" style="background:none;border:0;padding:0"><input type="checkbox" id="aka-acos-an" onchange="akaAcosSchalter(this.checked)"> <b>Von ACOS bearbeiten lassen</b></label>
+      <div id="aka-acos-teil" hidden>
+        <label class="ak-feld">Skill<select id="aka-skill" onchange="akaSkillInfo()">${d.typen.map(t=>`<option value="${_akE(t.slug)}">${_akE(t.titel)}</option>`).join('')}</select></label>
+        <div id="aka-skill-info" class="ak-leer" style="margin-top:.3rem"></div>
+        <label class="ak-feld">Thema für ACOS (ohne Unternehmensnamen)<input id="aka-thema" maxlength="500" placeholder="z. B. Erstanalyse Unternehmensprofil und Marktumfeld"></label>
+        <label class="ak-feld">Hinweise für ACOS (optional)<textarea id="aka-hinweise" rows="2"></textarea></label>
+        <div id="aka-vor" class="ak-leer" style="margin-top:.3rem"></div>
+        ${d.scharf ? '' : '<p class="ak-leer" style="color:#b91c1c">ACOS steht auf Trockenlauf – übergeben geht erst im Modus scharf.</p>'}
+      </div>`;
+  }).catch(()=>{});
+}
+function akaAcosSchalter(an){
+  document.getElementById('aka-acos-teil').hidden = !an;
+  document.getElementById('aka-speichern').textContent = an ? 'Anlegen und an ACOS übergeben' : 'Anlegen';
+  if(!an) return;
+  const th = document.getElementById('aka-thema'); if(th && !th.value) th.focus();
+  akaSkillInfo();
+  const vor = document.getElementById('aka-vor'); vor.textContent = 'Prüfe den Kundenordner …';
+  api('GET', '/api/acos/vorpruefung?firma_id=' + encodeURIComponent(_AK.id)).then(v=>{
+    if(!v.ok){ vor.textContent = v.meldung || ''; return; }
+    if(!v.fehlend.length){ vor.textContent = 'Alle ' + v.gesamt + ' Datei(en) des Kundenordners liegen schon in ACOS.'; return; }
+    vor.innerHTML = 'Noch nicht in ACOS – angehakte Dateien werden mitgesendet:' + v.fehlend.map(f=>
+      `<label style="display:block"><input type="checkbox" class="aka-dat" value="${_akE(f.pfad)}" ${f.sendbar ? 'checked' : 'disabled'}> ${_akE(f.pfad)}${f.sendbar ? '' : ' <i>(' + _akE(f.grund) + ')</i>'}</label>`).join('');
+  }).catch(()=>{ vor.textContent = 'Der Kundenordner konnte nicht geprüft werden.'; });
+}
+function akaSkillInfo(){
+  const sel = document.getElementById('aka-skill'), info = document.getElementById('aka-skill-info'); if(!sel || !info) return;
+  const t = ((_AKA && _AKA.typen) || []).find(x=>x.slug === sel.value) || {};
+  info.innerHTML = (t.zweck ? _akE(t.zweck) + '<br>' : '') + '<span id="aka-vor-skill">Prüfe die Voraussetzungen in ACOS …</span>';
+  const slug = sel.value;
+  api('GET', '/api/acos/voraussetzungen?firma_id=' + encodeURIComponent(_AK.id) + '&typ=' + encodeURIComponent(slug)).then(v=>{
+    const el = document.getElementById('aka-vor-skill'); if(!el || document.getElementById('aka-skill').value !== slug) return;
+    el.innerHTML = !v.ok ? _akE(v.meldung || 'Voraussetzungen nicht prüfbar.')
+      : !v.fehlt.length ? '<span style="color:#15803d">Voraussetzungen in ACOS erfüllt.</span>'
+      : '<span style="color:#b45309">In ACOS fehlt: ' + v.fehlt.map(_akE).join(', ') + '. ACOS wird voraussichtlich zurückfragen.</span>';
+  }).catch(()=>{});
+}
 function akteAufgabeSpeichern(){
   const titel = document.getElementById('aka-titel').value.trim();
   if(!titel){ _akMsg('Bitte beschreiben, was zu tun ist.'); return; }
+  const mitAcos = !!(document.getElementById('aka-acos-an') && document.getElementById('aka-acos-an').checked);
+  if(mitAcos && _AK.typ === 'firma'){
+    const thema = document.getElementById('aka-thema').value.trim();
+    if(!thema){ _akMsg('Bitte ein Thema für ACOS angeben.'); return; }
+    const auftrag = { typ: document.getElementById('aka-skill').value, thema, hinweise: document.getElementById('aka-hinweise').value,
+                      dateien_senden: Array.from(document.querySelectorAll('.aka-dat:checked')).map(x=>x.value) };
+    const btn = document.getElementById('aka-speichern'); btn.disabled = true; _akMsg('Wird angelegt und an ACOS übergeben …');
+    api('POST', '/api/contacts/' + encodeURIComponent(_AK.id) + '/aufgabe', { title: titel,
+        projekt_id: document.getElementById('aka-projekt').value || null, deadline: document.getElementById('aka-due').value || null })
+      .then(d=>{ _AK.d = d; _akListeVeraltet();
+        return api('POST', '/api/tasks/' + encodeURIComponent(d.neue_aufgabe) + '/auftrag', auftrag)
+          .then(()=>{ _AK.form = null; return akteLaden(); })
+          .catch(t=>{ _AK.form = null; akteLaden().then(()=>alert('Die Aufgabe ist angelegt, aber nicht an ACOS übergeben: ' + _akFehler(t) + '\n\nIm Aufgabenfenster lässt sie sich erneut übergeben.')); }); })
+      .catch(t=>{ btn.disabled = false; _akMsg(_akFehler(t)); });
+    return;
+  }
   const due = document.getElementById('aka-due').value || null;
   if(_AK.typ === 'projekt'){
     api('POST', '/api/tasks', { title: titel, projekt_id: _AK.id, deadline: due })
@@ -2261,6 +2332,18 @@ function renderHeuteStart(d){
         : b.aktion === 'akte' && b.firmaId ? `<button type="button" class="hz-link hs-ba" onclick="openAkte('${b.firmaId}')">Akte</button>` : ''}</div>`).join('')
     : '<p class="hz-leer">Nichts, was gerade Aufmerksamkeit braucht.</p>';
   if(_HZ) renderHeuteAbschluss(_HZ);   // ueberfaellig-Zahl der Tagesbilanz
+  renderHeuteMeldungen();
+}
+function renderHeuteMeldungen(){
+  const el = document.getElementById('hs-blick'); if(!el || !_HS) return;
+  el.querySelectorAll('.hs-meld').forEach(x=>x.remove());
+  const l = (typeof _ACOS_MELD !== 'undefined' ? _ACOS_MELD : []);
+  if(!l.length) return;
+  const leer = el.querySelector('.hz-leer'); if(leer) leer.remove();
+  el.insertAdjacentHTML('afterbegin', l.map(m=>`<div class="hs-meld"><span class="hs-punkt" style="background:var(--accent)"></span>
+      <div class="hs-bt"><b>${_hE(m.titel)}</b> · ${_hE(m.auftrags_id)}${m.firma ? ` · <button type="button" class="hz-link" onclick="openAkte('${_hE(m.firmaId)}')">${_hE(m.firma)}</button>` : ''}
+        <div>${_hE(m.aufgabe)}</div>${m.art === 'rueckfrage' ? `<div style="color:#334155">${_hE(m.text.replace(/^Rückfrage von ACOS:\s*/,''))}</div>` : ''}</div>
+      <span class="hs-ba"><button type="button" class="hz-link" onclick="editTask('${_hE(m.taskId)}')">${m.art === 'rueckfrage' ? 'Beantworten' : 'Öffnen'}</button> · <button type="button" class="hz-link" onclick="acosMeldungGesehen({ids:[${m.id}]})">Gesehen</button></span></div>`).join(''));
 }
 function heuteVerschieben(ids, ziel, btn){
   // H5: Faelligkeit verschieben, einzeln ("→ Morgen") oder gesammelt ("Alle auf heute")
@@ -3735,6 +3818,15 @@ button.hz-link:disabled{{opacity:.5}}
 .akte-overlay{{position:fixed;inset:0;background:rgba(15,23,42,.18);opacity:0;pointer-events:none;transition:opacity .2s;z-index:60}}
 .ak-titel .ak-fakten{{display:flex;gap:.9rem;flex-wrap:wrap;font-size:.8rem;color:var(--text2);margin-top:.35rem}}
 .ak-fakten .rot{{color:#b91c1c;font-weight:600}}
+#acos-toast{{position:fixed;right:1.2rem;bottom:1.2rem;z-index:200;max-width:360px;background:var(--surface);border:1px solid var(--accent);border-left:4px solid var(--accent);border-radius:10px;box-shadow:0 12px 30px rgba(15,23,42,.18);padding:.75rem .9rem;font-size:.85rem}}
+#acos-toast b{{color:var(--accent2)}}
+#acos-toast > div{{color:#334155;margin-top:.2rem}}
+.acos-t-mehr{{font-size:.78rem;color:var(--text2)!important}}
+.acos-t-akt{{display:flex;gap:.75rem;align-items:center;margin-top:.55rem!important}}
+.hs-meld{{display:flex;gap:.6rem;align-items:flex-start;padding:.55rem 1rem;border-bottom:1px solid #f1f5f9;font-size:.85rem;background:#eef2ff}}
+.hs-meld b{{color:var(--accent2)}}
+.ak-acos-feld{{grid-column:1/-1;border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;background:var(--surface2)}}
+.ak-acos-feld .ak-feld{{margin-top:.45rem}}
 .ak-haupt{{gap:.35rem}}
 .ak-aufgabe.ueber{{border-color:#fca5a5;box-shadow:inset 3px 0 0 #dc2626}}
 .ak-stammzeile{{display:flex;align-items:baseline;gap:.75rem;padding:.7rem 1rem}}
@@ -4489,7 +4581,15 @@ tr.st-hidden{{display:none !important}}
         <option value="scharf">Scharf – legt an, sendet Stammdaten, archiviert, legt Wissensobjekte ab</option>
       </select></label>
       <p class="set-hint" id="acos-ausgeblendet"></p>
-      <p class="set-hint">Läuft täglich um 6:30 Uhr. Verknüpft oder angelegt wird nur, was du am Unternehmen bestätigt hast; gelöscht wird nie.</p>
+      <label class="set-row">Offene Aufträge prüfen<select id="set-acos-takt" class="j-select">
+        <option value="2">alle 2 Minuten</option><option value="5">alle 5 Minuten</option><option value="10">alle 10 Minuten</option>
+        <option value="15">alle 15 Minuten</option><option value="30">alle 30 Minuten</option><option value="0">aus</option></select></label>
+      <p class="set-hint">Fragt nur dann bei ACOS nach, wenn ein Auftrag aus einer Aufgabe dort liegt – und nur für diese Mandanten. Ohne offenen Auftrag kein Abruf. Rückfragen und Ergebnisse erscheinen dann automatisch auf „Heute“ und in der Aufgabe. <span id="acos-takt-zuletzt"></span></p>
+      <label class="set-row">Voller Abgleich<span style="display:flex;gap:.5rem;align-items:center">
+        <select id="set-acos-voll" class="j-select" onchange="document.getElementById('set-acos-uhr').disabled=this.value!=='taeglich'">
+          <option value="taeglich">täglich um</option><option value="stuendlich">stündlich</option></select>
+        <input id="set-acos-uhr" type="time" value="06:30" style="width:7rem"></span></label>
+      <p class="set-hint">Stammdaten aller verknüpften Unternehmen, alle Wissensobjekte und die Skill-Liste. Verknüpft oder angelegt wird nur, was du am Unternehmen bestätigt hast; gelöscht wird nie.</p>
       <div class="set-actions"><span class="set-msg" id="set-acos-msg"></span>
         <button class="btn btn-ghost" onclick="acosAbgleichStarten()">↻ Jetzt abgleichen</button>
         <button class="btn btn-primary" onclick="saveAcosModus()">Speichern</button></div>
@@ -5330,6 +5430,7 @@ function taskAuftragLaden(id) {{
   api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{
     if (_AUF.taskId !== id) return;
     _AUF.d = d; aufZeichnen();
+    if ((d.verlauf || []).length) acosMeldungGesehen({{task_id: id}});
   }}).catch(() => {{}});
 }}
 function aufFirmaWechsel() {{
@@ -5365,9 +5466,7 @@ function aufZeichnen() {{
     if (a.meldung) h += '<div class="auf-klein">' + _esc(a.meldung) + '</div>';
     if (a.status === 'uebergeben' || a.status === 'rueckfrage') {{
       const ab = d.abgleich || {{}};
-      if (ab.laeuft) h += '<div class="auf-klein">Abgleich mit ACOS läuft gerade …</div>';
-      else if (ab.zuletzt) h += '<div class="auf-klein">Zuletzt in ACOS nachgesehen: ' + _esc(ab.zuletzt) + (a.status === 'uebergeben' ? ' – noch kein Ergebnis' : '') + '</div>';
-      if (a.status === 'uebergeben') h += '<button type="button" class="btn btn-ghost" onclick="aufNachsehen(this)"' + (ab.laeuft ? ' disabled' : '') + '>Bei ACOS nachsehen</button>';
+      if (a.status === 'uebergeben') h += '<div class="auf-klein">Das CRM ' + _esc(d.takt || 'prüft automatisch') + (ab.zuletzt ? ' · zuletzt ' + _esc(ab.zuletzt) : '') + '. Rückfrage und Ergebnis erscheinen von selbst.</div>';
     }}
     if (a.status === 'rueckfrage') {{
       h += '<div class="auf-rueck">' + _esc(a.rueckfrage || '') + '</div>';
@@ -5472,26 +5571,36 @@ function aufAbschliessen(btn) {{
     .then(() => {{ closeModal('task'); reloadKeepPanel(); }})
     .catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
 }}
-function aufNachsehen(btn) {{
-  btn.disabled = true;
-  const id = _AUF.taskId;
-  api('POST', '/api/acos/abgleich', {{}}).then(() => {{
-    btn.textContent = 'Abgleich läuft …';
-    let runden = 0, gesehen = false;
-    const pruefen = () => {{
-      if (_AUF.taskId !== id || !document.getElementById('modal-task').classList.contains('open')) return;
-      api('GET', '/api/tasks/' + encodeURIComponent(id) + '/auftrag').then(d => {{
-        if (_AUF.taskId !== id) return;
-        const laeuft = d.abgleich && d.abgleich.laeuft;
-        if (laeuft) gesehen = true;
-        runden += 1;
-        if ((laeuft || (!gesehen && runden < 3)) && runden < 16) {{ setTimeout(pruefen, 8000); return; }}
-        _aufNeuGeladen(d);
-      }}).catch(() => {{ if (runden < 16) setTimeout(pruefen, 8000); }});
-    }};
-    setTimeout(pruefen, 4000);
-  }}).catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
+/* ── ACOS-Meldungen (Migration 029): Rueckfrage, Ergebnis in ACOS, in der Nextcloud abgelegt ── */
+let _ACOS_MELD = [];
+function acosMeldungGesehen(body) {{
+  return fetch('/api/acos/meldungen/gesehen', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}})
+    .then(() => acosMeldungenLaden()).catch(() => {{}});
 }}
+function _acosMeldGezeigt() {{ try {{ return JSON.parse(sessionStorage.getItem('crm_acos_gezeigt') || '[]'); }} catch(e) {{ return []; }} }}
+function acosMeldungenLaden() {{
+  return fetch('/api/acos/meldungen').then(r => r.ok ? r.json() : []).then(l => {{
+    _ACOS_MELD = Array.isArray(l) ? l : [];
+    if (typeof renderHeuteMeldungen === 'function') renderHeuteMeldungen();
+    const gezeigt = _acosMeldGezeigt(), neu = _ACOS_MELD.filter(m => gezeigt.indexOf(m.id) < 0);
+    if (neu.length) {{
+      _acosEinblenden(neu);
+      try {{ sessionStorage.setItem('crm_acos_gezeigt', JSON.stringify(gezeigt.concat(neu.map(m => m.id)).slice(-200))); }} catch(e) {{}}
+    }}
+  }}).catch(() => {{}});
+}}
+function _acosEinblenden(neu) {{
+  let box = document.getElementById('acos-toast');
+  if (!box) {{ box = document.createElement('div'); box.id = 'acos-toast'; box.setAttribute('role', 'status'); document.body.appendChild(box); }}
+  const m = neu[0];
+  box.innerHTML = `<b>${{_esc(m.titel)}}</b> · ${{_esc(m.auftrags_id)}}<div>${{_esc(m.aufgabe || '')}}${{m.firma ? ' · ' + _esc(m.firma) : ''}}</div>`
+    + (neu.length > 1 ? `<div class="acos-t-mehr">und ${{neu.length - 1}} weitere Meldung(en)</div>` : '')
+    + `<div class="acos-t-akt"><button type="button" class="btn btn-primary hz-klein" onclick="document.getElementById('acos-toast').remove();editTask('${{_esc(m.taskId)}}')">Aufgabe öffnen</button>`
+    + `<button type="button" class="hs-spaeter" onclick="document.getElementById('acos-toast').remove()">Schließen</button></div>`;
+  clearTimeout(window._acosToastT);
+  window._acosToastT = setTimeout(() => {{ const b = document.getElementById('acos-toast'); if (b) b.remove(); }}, 20000);
+}}
+document.addEventListener('DOMContentLoaded', () => {{ acosMeldungenLaden(); setInterval(acosMeldungenLaden, 60000); }});
 
 function editTask(id) {{
   api('GET','/api/tasks').then(data=>{{
@@ -7309,9 +7418,11 @@ def akte_aufgabe(firma_id, body):
     pid = body.get("projekt_id") or None
     if pid and not _q1("SELECT 1 FROM projekte WHERE id=%s AND firma_id=%s", (int(pid), f["id"])):
         raise ValueError("Projekt gehört nicht zu diesem Unternehmen")
-    create_task({"title": titel, "projekt_id": pid, "firma_id": f["id"], "deadline": body.get("deadline") or None,
-                 "priority": body.get("priority") or "Mittel"})
-    return load_firma_akte(f["id"])
+    neu = create_task({"title": titel, "projekt_id": pid, "firma_id": f["id"], "deadline": body.get("deadline") or None,
+                       "priority": body.get("priority") or "Mittel"})
+    d = load_firma_akte(f["id"])
+    d["neue_aufgabe"] = neu
+    return d
 
 # ── ACOS-VORBEREITUNG (Migration 006, 2026-10-20) ──
 # Schritt 1 des Konzepts "Abgleich CRM-ACOS": Schalter, Verknuepfung und
@@ -7369,7 +7480,9 @@ def acos_status_view():
     try:
         laeufe = _q("""SELECT id, modus, ok, meldung, zahlen, bericht, ausgeloest_von, ende IS NOT NULL AS fertig,
                               to_char(start AT TIME ZONE 'Europe/Berlin', 'DD.MM.YYYY HH24:MI') AS start
-                       FROM acos_laeufe ORDER BY id DESC LIMIT 5""")
+                       FROM acos_laeufe WHERE ausgeloest_von IS DISTINCT FROM 'auftraege' ORDER BY id DESC LIMIT 5""")
+        letzte_auftraege = _q1("""SELECT to_char(max(start) AT TIME ZONE 'Europe/Berlin', 'DD.MM. HH24:MI') AS t
+                                  FROM acos_laeufe WHERE ausgeloest_von = 'auftraege'""")["t"] or ""
         z = _q1("""SELECT count(*) FILTER (WHERE f.acos_fuehren AND f.archiviert_am IS NULL) AS markiert,
                           count(*) FILTER (WHERE v.zustand='vorgeschlagen') AS offen,
                           count(*) FILTER (WHERE v.zustand='bestaetigt') AS verknuepft
@@ -7378,7 +7491,7 @@ def acos_status_view():
         return {"eingerichtet": False, "grund": "Datenbank noch nicht vorbereitet (Migration 007 fehlt)"}
     return {"eingerichtet": zugang, "grund": "" if zugang else "Zugang zu ACOS fehlt (secrets/acos.env)",
             "modus": "scharf" if _system_raw().get("acos_modus") == "scharf" else "trocken",
-            "laeufe": laeufe, "markiert": z["markiert"], "vorgeschlagen": z["offen"], "verknuepft": z["verknuepft"],
+            "laeufe": laeufe, "letzte_auftragspruefung": letzte_auftraege, **_acos_takt(_system_raw()), "markiert": z["markiert"], "vorgeschlagen": z["offen"], "verknuepft": z["verknuepft"],
             "ablage": "/" + kunden_ablage_basis(), "ausgeblendet": _system_raw().get("acos_ordner_ausblenden") or []}
 
 def acos_abgleich_starten(username):
@@ -8685,6 +8798,16 @@ def mail_settings():
         "intervall": int(sysw.get("mail_intervall", cfg.get("poll_interval_minutes", 10)) or 10),
     }
 
+ACOS_AUFTRAG_TAKTE = (0, 2, 5, 10, 15, 30)
+
+def _acos_takt(sysw):
+    t = sysw.get("acos_auftrag_takt", 5)
+    voll = sysw.get("acos_voll") or {}
+    uhr = str(voll.get("uhrzeit") or "")
+    return {"auftrag_takt": int(t) if str(t).isdigit() and int(t) in ACOS_AUFTRAG_TAKTE else 5,
+            "voll_art": voll.get("art") if voll.get("art") in ("taeglich", "stuendlich") else "taeglich",
+            "voll_uhrzeit": uhr if re.fullmatch(r"[0-2]\d:[0-5]\d", uhr) and int(uhr[:2]) < 24 else "06:30"}
+
 def load_system_settings():
     sysw = _system_raw()
     m = mail_settings()
@@ -8696,6 +8819,8 @@ def load_system_settings():
         "acos_modus": "scharf" if sysw.get("acos_modus") == "scharf" else "trocken",
         "acos_ordner_ausblenden": sysw.get("acos_ordner_ausblenden") or [],
         "tagesabschluss_acos": bool(sysw.get("tagesabschluss_acos", False)),
+        "acos_auftrag_takt": _acos_takt(sysw)["auftrag_takt"],
+        "acos_voll_art": _acos_takt(sysw)["voll_art"], "acos_voll_uhrzeit": _acos_takt(sysw)["voll_uhrzeit"],
         "tagesabschluss_firma": (inhaber_firma() or {}).get("name") or (load_config().get("inhaber_firma") or ""),
         "tagesabschluss_bereit": bool(inhaber_firma(nur_verknuepft=True)),
     }
@@ -8753,6 +8878,19 @@ def save_system_settings(username, body):
         if an and not inhaber_firma(nur_verknuepft=True):
             raise ValueError("Das Unternehmen, dem dieses CRM gehört, ist nicht mit ACOS verknüpft")
         neu["tagesabschluss_acos"] = an
+    if "acos_auftrag_takt" in body:
+        t = int(body["acos_auftrag_takt"])
+        if t not in ACOS_AUFTRAG_TAKTE:
+            raise ValueError("Ungültiger Takt für die Auftragsprüfung")
+        neu["acos_auftrag_takt"] = t
+    if "acos_voll_art" in body or "acos_voll_uhrzeit" in body:
+        art = body.get("acos_voll_art", "taeglich")
+        uhr = str(body.get("acos_voll_uhrzeit") or "06:30").strip()
+        if art not in ("taeglich", "stuendlich"):
+            raise ValueError("Ungültige Angabe für den vollen Abgleich")
+        if not re.fullmatch(r"[0-2]\d:[0-5]\d", uhr) or int(uhr[:2]) > 23:
+            raise ValueError("Uhrzeit bitte als HH:MM angeben")
+        neu["acos_voll"] = {"art": art, "uhrzeit": uhr}
     if "mail_intervall" in body:
         i = int(body["mail_intervall"])
         if i not in MAIL_INTERVALLE:

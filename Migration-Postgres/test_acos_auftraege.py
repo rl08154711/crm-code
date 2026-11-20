@@ -216,6 +216,11 @@ try:
     r2 = status(a2["auftrags_id"])
     pruef("Auftrag 'bearbeitet', Artefakt zugeordnet", r2["status"] == "bearbeitet" and r2["acos_artefakt_id"] == "w-art-1")
     pruef("Kopie im Kundenordner unter <Kunde>/ACOS/Wissen", f"{FIRMA}/ACOS/Wissen/" in (r2["nextcloud_pfad"] or ""))
+    vl = verlauf(t)
+    pruef("Verlauf: erst 'liegt in ACOS', dann 'in der Nextcloud abgelegt' (je einmal)", vl.count("in_acos") == 1 and vl.count("bearbeitet") == 1
+          and vl.index("in_acos") < vl.index("bearbeitet"))
+    pruef("Meldungen fuer Heute: Ergebnis in ACOS und abgelegt", {"in_acos", "bearbeitet"} <= {m["art"] for m in auf.meldungen() if m["taskId"] == t})
+    pruef("Aufgabenfenster nennt den Takt", "prüft automatisch" in auf.auftraege_zu_aufgabe(t).get("takt", "") or "ausgeschaltet" in auf.auftraege_zu_aufgabe(t).get("takt", ""))
     tk = aufgabe(t)
     pruef("Aufgabe 'Bearbeitet', nicht erledigt, Notizen unveraendert", tk["status"] == "Bearbeitet" and tk["completed_at"] is None
           and tk["notes"] == "meine Notiz, ergaenzt")

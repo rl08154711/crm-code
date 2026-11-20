@@ -1,10 +1,10 @@
 [Unit]
-Description=CRM Abgleich mit ACOS taeglich 6:30 Uhr
+Description=CRM-Takt ACOS: jede Minute pruefen, ob Auftragspruefung oder voller Abgleich faellig ist (Einstellungen)
 
 [Timer]
-OnCalendar=*-*-* 06:30:00 Europe/Berlin
-RandomizedDelaySec=60
-Persistent=true
+OnCalendar=*-*-* *:*:00 Europe/Berlin
+AccuracySec=5s
+Persistent=false
 
 [Install]
 WantedBy=timers.target
