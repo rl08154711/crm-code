@@ -64,3 +64,7 @@ id_ed25519*
 # ─── Abgleich mit dem Server (03.11.2026) ───────────────────────────
 # Vom Server geholte Vergleichsdateien, z. B. config.json – nur lokal
 /_vom_server_*
+
+# Vorlagen aus Claude Design (nur lokal)
+/_design/
+/*.zip

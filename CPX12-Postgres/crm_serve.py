@@ -327,6 +327,10 @@ class CRMHandler(BaseHTTPRequestHandler):
                 # Archiv-Reiter (Migration 002): alle archivierten Datensaetze
                 self._send_json(core.load_archive())
             elif path == "/api/server/restart":
+                if not core.darf_server_steuern(self._current_user()):
+                    # A1 (20.11.2026): nur Admins duerfen den Server neu starten oder stoppen
+                    self._send_json({"ok": False, "error": "Nur für Admins"}, 403, "Forbidden")
+                    return
                 # Re-execv ersetzt den laufenden Prozess in-place (gleiche PID) -
                 # funktioniert unter systemd genauso wie im lokalen Betrieb,
                 # ohne dass systemd einen Absturz/Neustart-Zyklus sieht.
@@ -339,6 +343,10 @@ class CRMHandler(BaseHTTPRequestHandler):
                     os.execv(sys.executable, [sys.executable] + sys.argv)
                 threading.Thread(target=_restart, daemon=True).start()
             elif path == "/api/server/shutdown":
+                if not core.darf_server_steuern(self._current_user()):
+                    # A1 (20.11.2026): nur Admins duerfen den Server neu starten oder stoppen
+                    self._send_json({"ok": False, "error": "Nur für Admins"}, 403, "Forbidden")
+                    return
                 # Sauberer Exit (Code 0). Bei Restart=on-failure im systemd-Unit
                 # startet der Dienst danach NICHT automatisch neu - das ist hier
                 # gewollt (echtes "Stop"), erfordert danach aber "systemctl start

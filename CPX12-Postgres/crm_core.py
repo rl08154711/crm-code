@@ -1030,7 +1030,7 @@ function renderAcosFirma(d){
       return `<div class="related-item acos-item" title="${_aE(a.meldung||'')}">
         <span class="related-item-title">${_aE(a.titel || '(ohne Titel)')}
           <small style="color:var(--text2);font-weight:400">${a.art ? ' · ' + _aE(a.art) : ''}${a.acos_projekt ? ' · ' + _aE(a.acos_projekt) : ''} · ${_aDate(a.stand)}</small></span>
-        <span style="display:flex;gap:.4rem;align-items:center">${links}<span class="badge" style="background:${st[1]};font-size:.65rem">${_aE(st[0])}</span></span>
+        <span style="display:flex;gap:.4rem;align-items:center">${links}<span class="badge" style="color:${st[1]};border-color:${st[1]}33;background:${st[1]}14;font-size:.65rem">${_aE(st[0])}</span></span>
       </div>`;
     }).join('') + '</div>';
   } else {
@@ -1122,8 +1122,8 @@ function _adEbene(pfad, tiefe){
     const waehlbar = _adWaehlbar(f);
     let rechts;
     if(f.zu_gross) rechts = '<span class="acos-klein" style="white-space:nowrap">über 25 MB</span>';
-    else if(f.gesendet_am && !f.geaendert_seit_senden) rechts = `<span class="badge" style="background:#16a34a;font-size:.65rem">in ACOS seit ${_aE(f.gesendet_am)}</span>`;
-    else if(f.geaendert_seit_senden) rechts = '<span class="badge" style="background:#b45309;font-size:.65rem">geändert seit dem Senden</span>';
+    else if(f.gesendet_am && !f.geaendert_seit_senden) rechts = `<span class="badge" style="color:#16a34a;border-color:#16a34a33;background:#16a34a14;font-size:.65rem">in ACOS seit ${_aE(f.gesendet_am)}</span>`;
+    else if(f.geaendert_seit_senden) rechts = '<span class="badge" style="color:#b45309;border-color:#b4530933;background:#b4530914;font-size:.65rem">geändert seit dem Senden</span>';
     else rechts = '';
     const hinweis = [f.geaendert, _aGr(f.groesse), f.lesbar ? '' : 'Text für ACOS nicht lesbar', f.fehler ? 'letzter Versuch: ' + f.fehler : ''].filter(Boolean).join(' · ');
     h += `<label class="ad-zeile ad-datei${f.gesendet_am && !f.geaendert_seit_senden ? ' acos-gesendet' : ''}" style="padding-left:${tiefe*16+8}px">
@@ -1386,10 +1386,12 @@ function openPersonAkte(id, tab, edit){ return _akOeffnen('person', id, tab, edi
 function openProjektAkte(id, tab, edit){ return _akOeffnen('projekt', id, tab, edit); }
 function _akOeffnen(typ, id, tab, edit){
   const neu = !_AK || _AK.id !== String(id) || _AK.typ !== typ;
-  _AK = { typ, id: String(id), d: _AK && !neu ? _AK.d : null, tab: tab || (neu ? 'uebersicht' : _AK.tab), edit: !!edit, menu: false, form: null, erledigtZeigen: false };
+  _AK = { typ, id: String(id), d: _AK && !neu ? _AK.d : null, tab: tab || (neu ? 'uebersicht' : _AK.tab), edit: !!edit, menu: false, form: null, erledigtZeigen: false, stammAuf: false };
   document.getElementById('akte').classList.add('offen');
   document.getElementById('akte').setAttribute('aria-hidden', 'false');
   document.getElementById('akte-overlay').classList.add('offen');
+  document.body.classList.add('akte-offen');
+  _akKopfHoehe();
   document.querySelectorAll('tr.ak-aktiv').forEach(r=>r.classList.remove('ak-aktiv'));
   const sel = { firma: '#c-tbl tr[data-cid="' + id + '"]', person: '#per-tbl tr[data-person="' + id + '"]', projekt: 'tr[data-oid="' + id + '"]' }[typ];
   document.querySelectorAll(sel).forEach(r=>r.classList.add('ak-aktiv'));
@@ -1412,7 +1414,39 @@ function akteZu(){
   document.getElementById('akte').classList.remove('offen');
   document.getElementById('akte').setAttribute('aria-hidden', 'true');
   document.getElementById('akte-overlay').classList.remove('offen');
+  document.body.classList.remove('akte-offen');
   document.querySelectorAll('tr.ak-aktiv').forEach(r=>r.classList.remove('ak-aktiv'));
+}
+function _akKopfHoehe(){
+  // Die angedockte Akte beginnt unter der Kopfleiste (S4, 20.11.2026)
+  const k = document.getElementById('kopfleiste');
+  const h = k ? Math.max(0, Math.round(k.getBoundingClientRect().bottom)) : 0;
+  document.documentElement.style.setProperty('--kopf-h', h + 'px');
+}
+window.addEventListener('scroll', ()=>{ if(_AK) _akKopfHoehe(); }, {passive:true});
+window.addEventListener('resize', ()=>{ if(_AK) _akKopfHoehe(); });
+function akteBlaettern(richtung){
+  // ↑/↓ wechselt zum vorigen/naechsten sichtbaren Eintrag der Liste
+  if(!_AK) return false;
+  const tb = { firma: '#c-tbl tbody tr[data-cid]', person: '#per-tbl tbody tr[data-person]' }[_AK.typ];
+  if(!tb) return false;
+  const rows = Array.from(document.querySelectorAll(tb)).filter(r=>!r.classList.contains('fx-aus') && r.offsetParent);
+  if(!rows.length) return false;
+  const key = _AK.typ === 'firma' ? 'cid' : 'person';
+  let i = rows.findIndex(r=>r.dataset[key] === _AK.id);
+  i = i < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, i + richtung));
+  const r = rows[i];
+  if(r.dataset[key] === _AK.id) return true;
+  r.scrollIntoView({block:'nearest'});
+  if(_AK.typ === 'firma') openAkte(r.dataset.cid, _AK.tab); else openPersonAkte(r.dataset.person, _AK.tab);
+  return true;
+}
+function _akKontakt(d){
+  if(!d) return '<span class="kt kt-nie"><i></i>noch kein Kontakt</span>';
+  const t = Math.round((new Date(new Date().toDateString()) - new Date(d + 'T00:00:00')) / 86400000);
+  const st = t <= 30 ? 'w' : t <= 90 ? 'm' : 'r';
+  const txt = t <= 0 ? 'heute' : t === 1 ? 'gestern' : t < 60 ? 'vor ' + t + ' Tagen' : 'vor ' + Math.round(t/30) + ' Monaten';
+  return `<span class="kt kt-${st}" title="${_akD(d)}"><i></i>Letzter Kontakt ${txt}</span>`;
 }
 function akteTab(t){ _AK.tab = t; _AK.menu = false; _AK.form = null; _akMerken(); akteZeichnen(); }
 function akteMenu(){ _AK.menu = !_AK.menu; akteZeichnen(); }
@@ -1434,7 +1468,8 @@ function akteZeichnen(){
     <div class="ak-titelzeile">
       <div class="ak-titel"><h2>${_akE(d.firma)}</h2>
         <div class="ak-unter">${_akBeziehung(d)}${d.acos_fuehren ? ' <span class="ak-acos">In ACOS</span>' : ''}
-          <span>${_akE([d.branch, (d.address||'').split(',').pop().trim()].filter(Boolean).join(' · '))}</span></div></div>
+          <span>${_akE([d.branch, (d.address||'').split(',').pop().trim()].filter(Boolean).join(' · '))}</span></div>
+        <div class="ak-fakten">${_akKontakt(d.last_contact)}<span>${offen.length ? offen.length + ' offene ' + (offen.length === 1 ? 'Aufgabe' : 'Aufgaben') : 'keine offene Aufgabe'}</span>${(()=>{ const u = offen.filter(a=>a.ueberfaellig).length; return u ? `<span class="rot">${u} überfällig</span>` : ''; })()}</div></div>
       <div class="ak-menuwrap">
         <button type="button" class="ak-iconbtn" onclick="akteMenu()" aria-label="Weitere Aktionen" aria-expanded="${_AK.menu}">${AK_ICON.dots}</button>
         ${_AK.menu ? `<div class="ak-menu" role="menu">
@@ -1449,8 +1484,8 @@ function akteZeichnen(){
     <div class="ak-aktionen">
       ${tel ? `<a class="ak-btn" href="${_akTel(tel)}">${AK_ICON.tel}Anrufen</a>` : ''}
       ${mail ? `<a class="ak-btn" href="mailto:${_akE(mail)}">${AK_ICON.mail}E-Mail</a>` : ''}
-      <button type="button" class="ak-btn" onclick="_AK.tab='journal';_akMerken();akteForm('journal')">${AK_ICON.plus}Journal-Eintrag</button>
-      <button type="button" class="ak-btn" onclick="_AK.tab='projekte';_akMerken();akteForm('aufgabe')">${AK_ICON.plus}Aufgabe</button>
+      <button type="button" class="ak-btn" onclick="_AK.tab='journal';_akMerken();akteForm('journal')">${AK_ICON.plus}Journal</button>
+      <button type="button" class="ak-prim ak-haupt" onclick="_AK.tab='projekte';_akMerken();akteForm('aufgabe')">${AK_ICON.plus}Aufgabe</button>
     </div>
     ${_AK.form === 'next' ? `<div class="ak-next ak-next-edit"><label for="ak-next-in"><strong>Nächster Schritt</strong></label>
         <input id="ak-next-in" data-autofocus value="${_akE(d.next_action)}" onkeydown="if(event.key==='Enter')akteNextSpeichern();if(event.key==='Escape')akteForm(null)">
@@ -1473,7 +1508,24 @@ function akteZeichnen(){
 }
 
 function _akUebersicht(d, offen){
-  let h = `<section class="ak-karte"><div class="ak-kz"><h3>Stammdaten</h3>${_AK.edit ? '' : '<button type="button" class="ak-link" onclick="_AK.edit=true;akteZeichnen()">Bearbeiten</button>'}</div>`;
+  let h = '';
+  h += `<section><div class="ak-kz"><h3>Offene Aufgaben</h3><button type="button" class="ak-link" onclick="akteTab('projekte')">${offen.length ? 'Alle (' + offen.length + ')' : '＋ Aufgabe'}</button></div>`;
+  h += offen.length ? offen.slice().sort((a,b)=>(b.ueberfaellig?1:0)-(a.ueberfaellig?1:0) || String(a.deadline||'9').localeCompare(String(b.deadline||'9'))).slice(0,4).map(a=>_akAufgabe(a, true)).join('') : '<p class="ak-leer">Keine offenen Aufgaben.</p>';
+  h += '</section>';
+  h += `<section><div class="ak-kz"><h3>Letzte Aktivitäten</h3><button type="button" class="ak-link" onclick="akteTab('journal')">Alle</button></div>`;
+  h += d.journal.length ? d.journal.slice(0,4).map(j=>_akJZeile(j)).join('') : '<p class="ak-leer">Noch keine Einträge.</p>';
+  h += '</section>';
+  h += `<section><div class="ak-kz"><h3>Ansprechpartner</h3><button type="button" class="ak-link" onclick="akteTab('personen')">${d.personen.length ? 'Alle (' + d.personen.length + ')' : '＋ Person'}</button></div>`;
+  h += d.personen.length ? d.personen.slice(0,3).map(p=>_akPersonZeile(p)).join('') : '<p class="ak-leer">Noch keine Person.</p>';
+  h += '</section>';
+  h += _akBeteiligte(d);
+  h += _akVertraege(d);
+  if(!_AK.edit && !_AK.stammAuf){
+    const kurz = [d.branch, (d.address||'').split(',').pop().trim(), d.phone_central].filter(Boolean).join(' · ');
+    return h + `<section class="ak-karte ak-stammzeile"><h3>Stammdaten</h3><span>${_akE(kurz) || '<span class="ak-leer">noch leer</span>'}</span>
+      <button type="button" class="ak-link" onclick="_AK.stammAuf=true;akteZeichnen()">Anzeigen</button></section>`;
+  }
+  h += `<section class="ak-karte"><div class="ak-kz"><h3>Stammdaten</h3>${_AK.edit ? '' : '<button type="button" class="ak-link" onclick="_AK.edit=true;akteZeichnen()">Bearbeiten</button> <button type="button" class="ak-link" onclick="_AK.stammAuf=false;akteZeichnen()">Einklappen</button>'}</div>`;
   if(!_AK.edit){
     const z = (l, v) => `<dt>${l}</dt><dd>${v || '<span class="ak-leer">–</span>'}</dd>`;
     h += `<dl class="ak-dl">${z('Beziehung', _akBeziehung(d))}${z('Branche', _akE(d.branch))}${z('Adresse', _akE(d.address))}
@@ -1498,17 +1550,6 @@ function _akUebersicht(d, offen){
         <button type="button" class="ak-btn" onclick="_AK.edit=false;akteZeichnen()">Abbrechen</button>
         <button type="button" class="ak-prim" onclick="akteStammSpeichern()">Speichern</button></div></div>`;
   }
-  h += '</section>';
-  h += `<section><div class="ak-kz"><h3>Ansprechpartner</h3><button type="button" class="ak-link" onclick="akteTab('personen')">${d.personen.length ? 'Alle (' + d.personen.length + ')' : '＋ Person'}</button></div>`;
-  h += d.personen.length ? d.personen.slice(0,3).map(p=>_akPersonZeile(p)).join('') : '<p class="ak-leer">Noch keine Person.</p>';
-  h += '</section>';
-  h += _akBeteiligte(d);
-  h += _akVertraege(d);
-  h += `<section><div class="ak-kz"><h3>Offene Aufgaben</h3><button type="button" class="ak-link" onclick="akteTab('projekte')">${offen.length ? 'Alle (' + offen.length + ')' : '＋ Aufgabe'}</button></div>`;
-  h += offen.length ? offen.slice(0,4).map(a=>_akAufgabe(a, true)).join('') : '<p class="ak-leer">Keine offenen Aufgaben.</p>';
-  h += '</section>';
-  h += `<section><div class="ak-kz"><h3>Letzte Aktivitäten</h3><button type="button" class="ak-link" onclick="akteTab('journal')">Alle</button></div>`;
-  h += d.journal.length ? d.journal.slice(0,4).map(j=>_akJZeile(j)).join('') : '<p class="ak-leer">Noch keine Einträge.</p>';
   return h + '</section>';
 }
 function _akPersonZeile(p){
@@ -1524,7 +1565,7 @@ function _akAufgabe(a, mitProjekt){
   const erl = a.status === 'Erledigt';
   const lauf = !!ACOS_TEXT[a.acos];
   const due = a.deadline ? `<span class="ak-due${a.ueberfaellig ? ' rot' : ''}">${a.ueberfaellig ? 'überfällig · ' : ''}${_akD(a.deadline).slice(0,6)}</span>` : '';
-  return `<div class="ak-aufgabe${erl ? ' erl' : ''}"><input type="checkbox" ${erl ? 'checked' : ''} ${lauf ? 'disabled title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''} aria-label="Erledigt: ${_akE(a.title)}" onchange="akteAufgabeErledigt('${_akE(a.taskId)}', this.checked)">
+  return `<div class="ak-aufgabe${erl ? ' erl' : ''}${a.ueberfaellig && !erl ? ' ueber' : ''}"><input type="checkbox" ${erl ? 'checked' : ''} ${lauf ? 'disabled title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''} aria-label="Erledigt: ${_akE(a.title)}" onchange="akteAufgabeErledigt('${_akE(a.taskId)}', this.checked)">
     <button type="button" class="ak-atitel" onclick="editTask('${_akE(a.taskId)}')">${_akE(a.title)}${_acosPill(a.acos)}${mitProjekt && a.projekt ? `<small>${_akE(a.projekt)}</small>` : ''}</button>${due}</div>`;
 }
 function _akJZeile(j){
@@ -1910,6 +1951,12 @@ const _akZuOrig = akteZu;
 akteZu = function(){ const neu = _akVeraltet; _akVeraltet = false; _akZuOrig(); if(neu) reloadKeepPanel(); };
 
 document.addEventListener('keydown', e=>{
+  if((e.key === 'ArrowDown' || e.key === 'ArrowUp') && _AK && !e.altKey && !e.ctrlKey && !e.metaKey){
+    const tag = (e.target && e.target.tagName) || '';
+    if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.querySelector('.modal-overlay.open') || _AK.form || _AK.edit) return;
+    if(akteBlaettern(e.key === 'ArrowDown' ? 1 : -1)) e.preventDefault();
+    return;
+  }
   if(e.key !== 'Escape' || !_AK) return;
   if(document.querySelector('.modal-overlay.open')) return;
   if(_AK.menu){ _AK.menu = false; akteZeichnen(); return; }
@@ -1934,7 +1981,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
 NAV_JS = r"""
 // ── MENUE: Gruppen + Favoriten, auf dem Handy Sandwich (2026-10-20) ──
 function navInit(){
-  const favs = (typeof CRM_USER !== 'undefined' && Array.isArray(CRM_USER.favoriten)) ? CRM_USER.favoriten : ['heute','tasks','contacts','pipeline'];
+  let favs = (typeof CRM_USER !== 'undefined' && Array.isArray(CRM_USER.favoriten)) ? CRM_USER.favoriten.slice() : ['heute','tasks','contacts','pipeline'];
+  // "Personen" steht als eigener Reiter direkt neben "Unternehmen" (S6, 20.11.2026)
+  const iu = favs.indexOf('contacts');
+  if(iu >= 0 && favs.indexOf('persons') < 0) favs.splice(iu + 1, 0, 'persons');
   const ziel = document.getElementById('nav-favs');
   ziel.innerHTML = '';
   document.querySelectorAll('#nav-groups .tab').forEach(t=>t.classList.remove('is-fav'));
@@ -1944,8 +1994,6 @@ function navInit(){
     const kopie = orig.cloneNode(true); kopie.removeAttribute('id'); kopie.classList.remove('nav-versteckt');
     ziel.appendChild(kopie); orig.classList.add('is-fav');
   });
-  document.querySelectorAll('#nav-groups .nav-group').forEach(g=>
-    g.classList.toggle('nur-favs', !g.querySelector('.tab:not(.is-fav)')));
 }
 function navZu(){
   document.querySelectorAll('.nav-group.open').forEach(g=>g.classList.remove('open'));
@@ -1967,8 +2015,25 @@ function navNachWahl(name){
   document.querySelectorAll('#nav-groups .nav-group').forEach(g=>
     g.classList.toggle('aktiv', !!g.querySelector('.tab.active:not(.is-fav)')));
   const t = document.querySelector('#nav-groups .tab[data-panel="'+name+'"]');
-  if(t) document.getElementById('nav-aktuell').textContent = t.textContent.replace(/\s*\(\d+\)\s*$/,'');
+  if(t) document.getElementById('nav-aktuell').textContent = t.childNodes[0].textContent.trim();
 }
+function nutzerZu(){ const n = document.getElementById('kl-nutzer'); if(n) n.classList.remove('open'); }
+function nutzerMenu(ev){ ev.stopPropagation(); navZu(); document.getElementById('kl-nutzer').classList.toggle('open'); }
+function kopfSuche(q){
+  const tab = document.getElementById('tab-wissen');
+  showPanel('wissen', tab);
+  const f = document.getElementById('r-q');
+  if(f){ f.value = q || ''; if(typeof rechercheFilter === 'function') rechercheFilter(0); f.focus(); }
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('#kl-nutzer')) nutzerZu(); });
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape') nutzerZu();
+  if(e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey){
+    const t = e.target, tag = (t && t.tagName) || '';
+    if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+    const f = document.getElementById('kl-q'); if(f && f.offsetParent){ e.preventDefault(); f.focus(); }
+  }
+});
 document.addEventListener('click', e=>{ if(!e.target.closest('#nav')) navZu(); });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') navZu(); });
 document.addEventListener('DOMContentLoaded', ()=>{ navInit(); navNachWahl('heute'); });
@@ -1997,13 +2062,14 @@ function _hzTaskZeile(t, mitDatum){
 function renderHeuteTag(d){
   const el = document.getElementById('h-tag'); if(!el) return;
   const t = d.tag, z = [];
-  t.erledigt.forEach(a=>z.push(`<li><span class="hz-art hz-ok">✓ Erledigt</span><span class="hz-text">${_hE(a.titel)}
-      <div class="hz-wer">${_hE([a.firma, a.projekt !== a.firma ? a.projekt : ''].filter(Boolean).join(' · '))}</div></span></li>`));
-  t.journal.forEach(j=>z.push(`<li class="hz-klickbar" tabindex="0" onclick="openJournalEntry(${j.id})" onkeydown="if(event.key==='Enter')openJournalEntry(${j.id})">
+  t.erledigt.forEach(a=>z.push({zeit: a.zeit || '', html: `<li><span class="hz-art hz-ok">✓ Erledigt</span><span class="hz-text">${_hE(a.titel)}
+      <div class="hz-wer">${_hE([a.firma, a.projekt !== a.firma ? a.projekt : ''].filter(Boolean).join(' · '))}</div></span><span class="hz-uhr">${_hE(a.zeit||'')}</span></li>`}));
+  t.journal.forEach(j=>z.push({zeit: j.zeit || '', html: `<li class="hz-klickbar" tabindex="0" onclick="openJournalEntry(${j.id})" onkeydown="if(event.key==='Enter')openJournalEntry(${j.id})">
       <span class="hz-art">${_hE(j.art_label)}</span><span class="hz-text">${_hE(j.text) || '<i>ohne Text</i>'}
-      <div class="hz-wer">${_hE([j.firma, j.person, j.projekt].filter(Boolean).join(' · '))}${j.minuten ? ' · '+j.minuten+' Min.' : ''}</div></span></li>`));
-  el.innerHTML = z.length ? `<ul class="hz-liste">${z.join('')}</ul>`
-    : '<p class="hz-leer">Noch nichts erfasst. Erledigte Aufgaben und Journal-Einträge von heute erscheinen hier.</p>';
+      <div class="hz-wer">${_hE([j.firma, j.person, j.projekt].filter(Boolean).join(' · '))}${j.minuten ? ' · '+j.minuten+' Min.' : ''}</div></span><span class="hz-uhr">${_hE(j.zeit||'')}</span></li>`}));
+  z.sort((a,b)=>(a.zeit||'').localeCompare(b.zeit||''));
+  el.innerHTML = z.length ? `<ul class="hz-liste">${z.map(x=>x.html).join('')}</ul>`
+    : '<p class="hz-leer" style="padding:.8rem 1rem">Noch nichts erfasst. Erledigte Aufgaben und Journal-Einträge von heute erscheinen hier.</p>';
 }
 function _hzResuemee(a){
   const r = a.resuemee || {}, n = r.zahlen || {};
@@ -2047,25 +2113,50 @@ function _hzBriefing(b, kurz){
   if(spalte.length) h += '<div class="hz-spalten">' + spalte.join('') + '</div>';
   return h + '</div>';
 }
+function _hzTageszahlen(d){
+  const t = d.tag, firmen = new Set();
+  t.erledigt.forEach(a=>{ if(a.firma) firmen.add(a.firma); });
+  t.journal.forEach(j=>{ if(j.firma) firmen.add(j.firma); });
+  const ueber = (_HS && _HS.aufgaben) ? _HS.aufgaben.ueber.length : 0;
+  const zahl = (w, l, rot) => `<div class="hz-zahl${rot ? ' rot' : ''}"><b>${w}</b><span>${l}</span></div>`;
+  return '<div class="hz-zahlen">' + zahl(t.erledigt.length,'erledigt') + zahl(t.journal.length,'Einträge')
+    + zahl(firmen.size,'Unternehmen') + zahl(ueber,'überfällig', ueber > 0) + '</div>';
+}
 function renderHeuteAbschluss(d){
   const el = document.getElementById('h-abschluss'); if(!el) return;
   const a = d.abschluss;
-  const form = (knopf, wert) => `<div class="hz-aktion"><textarea id="hz-notiz" placeholder="Eigene Notiz zum Tag (optional) – z. B. was hängen geblieben ist">${_hE(wert||'')}</textarea>
+  const hinweis = document.getElementById('h-abschluss-hinweis');
+  const form = (knopf, wert) => `<div class="hz-aktion"><textarea id="hz-notiz" placeholder="Notiz zum Tag (optional)">${_hE(wert||'')}</textarea>
       <button type="button" class="btn btn-primary" onclick="tagAbschliessen()">${knopf}</button></div><p class="hz-meta" id="hz-msg"></p>`;
   if(!a){
-    el.innerHTML = '<p class="hz-leer">Fasst Aufgaben und Journal von heute zusammen und legt das Briefing für den nächsten Arbeitstag an. '
-      + 'Vergisst du es, übernimmt das nachts die Automatik.</p>' + form('Tag abschließen');
+    if(hinweis) hinweis.textContent = 'sonst automatisch in der Nacht';
+    el.innerHTML = _hzTageszahlen(d) + form('Tag abschließen');
     return;
   }
   const b = a.briefing || {};
   const um = a.erstellt_am ? new Date(a.erstellt_am).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}) : '';
-  el.innerHTML = _hzResuemee(a)
-    + `<h4 style="font-size:.8rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:1.1rem 0 .45rem">Briefing für ${_hE(b.wochentag||'')}, ${_hD(b.fuer)}</h4>`
-    + _hzBriefing(b, false)
-    + `<p class="hz-meta">Abgeschlossen um ${um}${a.erstellt_von==='automatik' ? ' (Automatik)' : ''}. Läuft danach noch etwas, einfach erneut abschließen.`
+  if(hinweis) hinweis.textContent = 'abgeschlossen um ' + um + (a.erstellt_von==='automatik' ? ' (Automatik)' : '');
+  el.innerHTML = _hzTageszahlen(d)
+    + `<p class="hz-meta">Läuft danach noch etwas, einfach erneut abschließen.`
     + (a.bewertung_status==='gesendet' ? ` An ACOS gesendet als „${_hE(a.acos_meldung)}“.` + (a.bewertung ? '' : ' <a href="#" class="hz-link" onclick="bewertungAbholen();return false">Bewertung abholen</a>') : '')
     + (a.bewertung_status==='fehler' ? ` <span style="color:var(--red)">Übertragung an ACOS fehlgeschlagen: ${_hE(a.acos_meldung)}</span>` : '') + '</p>'
+    + `<details style="margin-top:.5rem"><summary class="hz-link" style="cursor:pointer">Resümee und Briefing für ${_hE(b.wochentag||'den nächsten Tag')}</summary>`
+    + _hzResuemee(a)
+    + `<h4 style="font-size:.8rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:1.1rem 0 .45rem">Briefing für ${_hE(b.wochentag||'')}, ${_hD(b.fuer)}</h4>`
+    + _hzBriefing(b, false) + '</details>'
     + `<details style="margin-top:.4rem"><summary class="hz-link" style="cursor:pointer">Neu abschließen</summary>${form('Neu erzeugen', a.notiz)}</details>`;
+}
+function _hbFirmenLinks(text){
+  // Firmennamen im Hinweis als Link zur Akte (aus der Firmenliste der Seite)
+  let h = _hE(text);
+  const liste = (typeof CRM_CONTACTS !== 'undefined' ? CRM_CONTACTS : []).filter(c=>c.firma && c.firma.length > 3)
+    .sort((a,b)=>b.firma.length - a.firma.length);
+  liste.forEach(c=>{
+    const n = _hE(c.firma);
+    if(h.indexOf(n) >= 0 && h.indexOf('data-fid="'+c.id+'"') < 0)
+      h = h.split(n).join(`<a href="#" data-fid="${_hE(c.id)}" onclick="openAkte('${_hE(c.id)}');return false">${n}</a>`);
+  });
+  return h;
 }
 function renderHeuteBriefing(d){
   const el = document.getElementById('h-briefing'); if(!el) return;
@@ -2074,10 +2165,18 @@ function renderHeuteBriefing(d){
   let zu = false;
   try { zu = localStorage.getItem('crm_briefing_zu') === b.aus_abschluss; } catch(e){}
   const quelle = b.aktuell ? 'aus dem Abschluss vom ' + _hD(b.aus_abschluss) : 'letzter Abschluss vom ' + _hD(b.aus_abschluss) + ' – inzwischen älter';
+  const hinweise = (b.hinweise || []).map(x=>`<div>${_hbFirmenLinks(x)}</div>`).join('');
+  const mehr = [];
+  if(b.fristen && b.fristen.length) mehr.push('<span><b>Projektfristen</b>' + b.fristen.map(p=>`${_hE(p.name)} <small>${_hD(p.deadline)}</small>`).join(' · ') + '</span>');
+  if(b.ruhig && b.ruhig.length) mehr.push('<span><b>Ruhend</b>' + b.ruhig.map(p=>`${_hE(p.name)} <small>${p.zuletzt ? 'seit '+_hD(p.zuletzt) : 'kein Eintrag'}</small>`).join(' · ') + '</span>');
   el.innerHTML = `<details class="hz-briefing${b.aktuell ? '' : ' hz-alt'}" ${zu ? '' : 'open'} ontoggle="briefingMerken(this, '${_hE(b.aus_abschluss)}')">
-      <summary><span>🧭 Briefing für ${_hE(d.wochentag)}</span><small>${quelle}</small></summary>${_hzBriefing(b, true)}</details>`;
+      <summary><span>Briefing für ${_hE(d.wochentag)}</span><small style="font-weight:400;color:var(--text2)">${quelle}</small><span class="hz-auf">${zu ? 'aufklappen' : 'zuklappen'}</span></summary>
+      ${hinweise ? `<div class="hb-hinweise">${hinweise}</div>` : '<p class="hz-leer" style="padding:.7rem 1rem">Keine besonderen Hinweise.</p>'}
+      ${mehr.length ? `<div class="hb-mehr">${mehr.join('')}</div>` : ''}
+      ${b.bewertung ? `<details class="hb-bew"><summary class="hz-link" style="cursor:pointer;background:none;padding:.5rem 0;font-weight:400">Bewertung aus ACOS</summary>${_hzMd(b.bewertung)}</details>` : ''}</details>`;
 }
 function briefingMerken(el, datum){
+  const auf = el.querySelector('.hz-auf'); if(auf) auf.textContent = el.open ? 'zuklappen' : 'aufklappen';
   try { if(el.open) localStorage.removeItem('crm_briefing_zu'); else localStorage.setItem('crm_briefing_zu', datum); } catch(e){}
 }
 function bewertungAbholen(){
@@ -2104,35 +2203,56 @@ function loadHeuteStart(){
 }
 document.addEventListener('DOMContentLoaded', ()=>{ if(document.getElementById('hs-aufgaben')) loadHeuteStart(); });
 function _hsZahl(n, eins, viele){ return n + ' ' + (n === 1 ? eins : viele); }
+function _hsSprung(id){ const el = document.getElementById(id); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }
+function _hsFirmaLink(t){
+  return t.firma ? `<button type="button" class="hz-link" onclick="${t.firmaId ? `openAkte('${t.firmaId}')` : `openContactByName('${_hE(t.firma)}')`}">${_hE(t.firma)}</button>` : '<span>eigene Aufgabe</span>';
+}
+function _hsHeuteIso(){ const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
+function _hsMorgenIso(){ const d = new Date(); d.setDate(d.getDate()+1); return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
 function renderHeuteStart(d){
-  const a = d.aufgaben, offenHeute = a.ueber.length + a.heute.length;
+  const a = d.aufgaben;
   document.getElementById('hs-datum').textContent = d.datum_lang;
   document.getElementById('hs-gruss').textContent = d.gruss + ', Ronald';
-  const lage = [];
-  if(d.kalender.eingerichtet) lage.push(d.termine.length ? _hsZahl(d.termine.length, 'Termin', 'Termine') : 'keine Termine');
-  lage.push(offenHeute ? _hsZahl(offenHeute, 'Aufgabe', 'Aufgaben') + ' für heute' + (a.ueber.length ? ', davon ' + a.ueber.length + ' überfällig' : '') : 'keine Aufgabe mehr für heute');
-  lage.push(d.mails_offen ? _hsZahl(d.mails_offen, 'Mail wartet', 'Mails warten') + ' auf Zuordnung' : 'Mail-Review leer');
-  document.getElementById('hs-lage').textContent = lage.join(' · ');
-  // Aufgaben
-  const gruppe = (titel, liste, rot) => liste.length ? `<div class="hs-gruppe">${titel}</div>` + liste.map(t=>`<div class="hs-task">
-      <input type="checkbox" ${t.acos ? 'disabled title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''} aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)">
+  // H2: Lagezeile als Sprungmarken, ueberfaellig rot und vorn
+  const chips = [];
+  if(a.ueber.length) chips.push(`<button type="button" class="hs-chip rot" onclick="_hsSprung('hs-karte-aufgaben')"><b>${a.ueber.length}</b> überfällig</button>`);
+  chips.push(`<button type="button" class="hs-chip" onclick="_hsSprung('hs-karte-aufgaben')"><b>${a.heute.length}</b> ${a.heute.length === 1 ? 'Aufgabe' : 'Aufgaben'} heute</button>`);
+  if(d.kalender.eingerichtet) chips.push(`<button type="button" class="hs-chip" onclick="_hsSprung('hs-karte-termine')"><b>${d.termine_offen}</b> ${d.termine_offen === 1 ? 'Termin' : 'Termine'} offen${d.naechster ? ' · nächster ' + _hE(d.naechster) : ''}</button>`);
+  chips.push(d.mails_offen ? `<button type="button" class="hs-chip" onclick="showPanel('mailreview', document.querySelector('.tab[data-panel=mailreview]'))"><b>${d.mails_offen}</b> ${d.mails_offen === 1 ? 'Mail' : 'Mails'} zuordnen</button>`
+                           : '<span class="hs-chip still">Mail-Review leer</span>');
+  document.getElementById('hs-lage').innerHTML = chips.join('');
+  // H5: Zu erledigen
+  const zeile = (t, ueber) => `<div class="hs-task${ueber ? ' ueber' : ''}">
+      <label class="hs-cb"${t.acos ? ' title="Läuft als ACOS-Auftrag – im Aufgabenfenster abschließen"' : ''}><input type="checkbox" ${t.acos ? 'disabled' : ''} aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)"></label>
       <div class="hs-tt"><button type="button" class="hs-titel" onclick="editTask('${_hE(t.taskId)}')">${_hE(t.titel)}</button>${typeof _acosPill === 'function' ? _acosPill(t.acos) : ''}
-        <div class="hs-wo">${t.firma ? `<button type="button" class="hz-link" onclick="${t.firmaId ? `openAkte('${t.firmaId}')` : `openContactByName('${_hE(t.firma)}')`}">${_hE(t.firma)}</button>` : '<span>eigene Aufgabe</span>'}${t.projekt ? ' · ' + _hE(t.projekt) : ''}</div></div>
-      <span class="hs-due${rot ? ' rot' : ''}">${_hE(t.faellig)}</span></div>`).join('') : '';
-  const auf = gruppe('Überfällig', a.ueber, true) + gruppe('Heute', a.heute) + gruppe('Diese Woche', a.woche);
+        <div class="hs-wo">${_hsFirmaLink(t)}${t.projekt ? ' · ' + _hE(t.projekt) : ''}</div></div>
+      <div class="hs-rechts">${ueber ? `<span class="hs-due rot">seit ${t.tage} ${t.tage === 1 ? 'Tag' : 'Tagen'}</span>` : ''}
+        <button type="button" class="hs-morgen" onclick="heuteVerschieben(['${_hE(t.taskId)}'], 'morgen', this)" title="Fälligkeit auf morgen setzen">→ Morgen</button></div></div>`;
+  let auf = '';
+  if(a.ueber.length) auf += `<div class="hs-gruppe rot"><span>Überfällig · ${a.ueber.length}</span><button type="button" class="hz-link" onclick="heuteVerschieben(${_hE(JSON.stringify(a.ueber.map(t=>t.taskId)))}, 'heute', this)">Alle auf heute</button></div>` + a.ueber.map(t=>zeile(t, true)).join('');
+  if(a.heute.length) auf += `<div class="hs-gruppe"><span>Heute · ${a.heute.length}</span></div>` + a.heute.map(t=>zeile(t, false)).join('');
+  if(a.woche.length) auf += `<div class="hs-woche" id="hs-woche-kurz"><b>Diese Woche · ${a.woche.length}</b><span>${a.woche.map(t=>_hE(t.titel) + ' (' + _hE(t.faellig.split(' ')[0]) + ')').join(' · ')}</span>
+      <button type="button" class="hz-link" onclick="document.getElementById('hs-woche-kurz').style.display='none';document.getElementById('hs-woche-lang').style.display=''">Zeigen</button></div>
+      <div id="hs-woche-lang" style="display:none"><div class="hs-gruppe"><span>Diese Woche · ${a.woche.length}</span></div>` + a.woche.map(t=>`<div class="hs-task">
+        <label class="hs-cb"><input type="checkbox" ${t.acos ? 'disabled' : ''} aria-label="Erledigt: ${_hE(t.titel)}" onchange="heuteAufgabeErledigt('${_hE(t.taskId)}', this)"></label>
+        <div class="hs-tt"><button type="button" class="hs-titel" onclick="editTask('${_hE(t.taskId)}')">${_hE(t.titel)}</button>
+          <div class="hs-wo">${_hsFirmaLink(t)}${t.projekt ? ' · ' + _hE(t.projekt) : ''}</div></div>
+        <span class="hs-due">${_hE(t.faellig)}</span></div>`).join('') + '</div>';
   document.getElementById('hs-aufgaben').innerHTML = auf || '<p class="hz-leer">Nichts fällig in den nächsten sieben Tagen.</p>';
   document.getElementById('hs-erl').textContent = d.erledigt_heute ? d.erledigt_heute + ' heute erledigt' : '';
-  // Mails
-  document.getElementById('hs-mailzahl').textContent = d.mails_offen ? d.mails_offen + ' offen' : 'alles zugeordnet';
+  // H6: Mail-Review-Karte
+  const eindeutig = d.mails.filter(m=>m.einfach).length;
+  document.getElementById('hs-mailzahl').textContent = d.mails_offen ? d.mails_offen + ' offen' + (eindeutig ? ' · ' + eindeutig + ' eindeutig' : '') : 'alles zugeordnet';
   document.getElementById('hs-mails').innerHTML = d.mails.length ? d.mails.map(m=>`<div class="hs-mail" id="hs-mail-${m.id}">
-      <div class="hs-mk"><span class="hs-mvon">${_hE(m.von)}</span><span class="hs-mbetr"> · ${_hE(m.betreff)}</span><span class="hs-mzeit">${_hE(_hD(m.datum))}</span></div>
-      <div class="hs-mv"><span class="hs-vorschlag">${_hE(m.vorschlag)}</span>
-        <button type="button" class="btn btn-ghost hz-klein" onclick="heuteMailSpaeter('${m.id}')">Später</button>
-        ${m.einfach ? `<button type="button" class="btn btn-primary hz-klein" onclick="heuteMailOk('${m.id}')">Übernehmen</button>`
-                    : `<button type="button" class="btn btn-primary hz-klein" onclick="heuteMailPruefen('${m.id}')">Prüfen</button>`}</div></div>`).join('')
+      <div class="hs-ml"><div class="hs-mk"><span class="hs-mvon">${_hE(m.von)}</span><span class="hs-mzeit">${_hE(m.zeit || _hD(m.datum))}</span></div>
+        <div class="hs-mbetreff" title="${_hE(m.betreff)}">${_hE(m.betreff)}</div>
+        <div class="hs-etiketten">${(m.etiketten||[]).map(e=>`<span class="hs-et ${e.a === 'firma' ? '' : _hE(e.a)}">${_hE(e.t)}</span>`).join('')}</div></div>
+      <div class="hs-mr">${m.einfach ? `<button type="button" class="btn btn-primary hz-klein" onclick="heuteMailOk('${m.id}')">Übernehmen</button>`
+                    : `<button type="button" class="btn hz-klein hs-pruefen" onclick="heuteMailPruefen('${m.id}')">Prüfen</button>`}
+        <button type="button" class="hs-spaeter" onclick="heuteMailSpaeter('${m.id}')">Später</button></div></div>`).join('')
     : '<p class="hz-leer">Keine offenen Mails.</p>';
   renderHeuteTermine(d);
-  // Im Blick
+  // Im Blick (unveraendert)
   document.getElementById('hs-blick').innerHTML = d.im_blick.length ? d.im_blick.map((b,i)=>`<div class="hs-blick">
       <span class="hs-punkt ${b.art === 'fehler' ? 'rot' : b.art === 'schritt' ? 'grau' : ''}"></span>
       <div class="hs-bt">${b.firma ? `<button type="button" class="hz-link" onclick="${b.firmaId ? `openAkte('${b.firmaId}')` : `openContactByName('${_hE(b.firma)}')`}">${_hE(b.firma)}</button>` : ''}<div>${_hE(b.text)}</div></div>
@@ -2140,6 +2260,15 @@ function renderHeuteStart(d){
         : b.aktion === 'projekt' ? `<button type="button" class="hz-link hs-ba" onclick="openProjektAkte('${b.projektId}')">Projekt öffnen</button>`
         : b.aktion === 'akte' && b.firmaId ? `<button type="button" class="hz-link hs-ba" onclick="openAkte('${b.firmaId}')">Akte</button>` : ''}</div>`).join('')
     : '<p class="hz-leer">Nichts, was gerade Aufmerksamkeit braucht.</p>';
+  if(_HZ) renderHeuteAbschluss(_HZ);   // ueberfaellig-Zahl der Tagesbilanz
+}
+function heuteVerschieben(ids, ziel, btn){
+  // H5: Faelligkeit verschieben, einzeln ("→ Morgen") oder gesammelt ("Alle auf heute")
+  const datum = ziel === 'morgen' ? _hsMorgenIso() : _hsHeuteIso();
+  if(btn) btn.disabled = true;
+  Promise.all(ids.map(id=>api('PUT', '/api/tasks/' + encodeURIComponent(id), { deadline: datum })))
+    .then(()=>{ window._crmGeaendert = true; loadHeuteStart(); })
+    .catch(()=>{ if(btn) btn.disabled = false; alert('Konnte nicht verschoben werden.'); });
 }
 let _hsNotizOffen = null;
 function _hsFirmenOpts(){ return '<option value="">– Unternehmen wählen –</option>' + (typeof CRM_CONTACTS !== 'undefined' ? CRM_CONTACTS : []).map(c=>`<option>${_hE(c.firma)}</option>`).join(''); }
@@ -2321,7 +2450,25 @@ function mitDublettenCheck(send){
 
 // Bestandsliste
 function dublettenZaehlen(){
-  api('GET','/api/dubletten').then(d=>{ const el = document.getElementById('dub-n'); if(el) el.textContent = d.anzahl ? '('+d.anzahl+')' : ''; }).catch(()=>{});
+  api('GET','/api/dubletten').then(dubHinweis).catch(()=>{});
+}
+function newPersonOhneFirma(){
+  // Personen gehoeren immer zu einem Unternehmen: dessen Akte oeffnen, Formular "Neue Person"
+  const name = (prompt('Zu welchem Unternehmen gehört die Person?') || '').trim();
+  if(!name) return;
+  const l = name.toLowerCase();
+  const c = CRM_CONTACTS.find(x=>(x.firma||'').toLowerCase() === l) || CRM_CONTACTS.find(x=>(x.firma||'').toLowerCase().includes(l));
+  if(!c){ alert('Unternehmen „' + name + '“ nicht gefunden. Bitte erst das Unternehmen anlegen.'); return; }
+  openAkte(c.id, 'personen').then(()=>akteForm('person'));
+}
+function dubHinweis(d){
+  // S6: nur sichtbar, wenn es Verdachtsfaelle gibt
+  const box = document.getElementById('dub-hinweis'); if(!box) return;
+  const n = d.anzahl || 0, sicher = (d.paare||[]).filter(p=>p.stufe === 'sicher').length;
+  box.hidden = !n;
+  const t = document.getElementById('dub-text');
+  if(t) t.textContent = n ? (n === 1 ? '1 mögliche Dublette gefunden' : n + ' mögliche Dubletten gefunden') + (sicher ? ', davon ' + sicher + ' sicher.' : '.') : '';
+  const z = document.getElementById('dub-n'); if(z) z.textContent = n ? '('+n+')' : '';
 }
 function dublettenOeffnen(){
   _dubModal('⧉ Mögliche Dubletten', '<p class="hz-leer">Wird geprüft…</p>', true);
@@ -2329,7 +2476,7 @@ function dublettenOeffnen(){
 }
 function _dubListe(d){
   const el = document.getElementById('dub-inhalt'); if(!el) return;
-  const n = document.getElementById('dub-n'); if(n) n.textContent = d.anzahl ? '('+d.anzahl+')' : '';
+  dubHinweis(d);
   if(!d.paare.length){ el.innerHTML = '<p class="hz-leer">Keine Dubletten gefunden.</p><div class="modal-footer"><span></span><button class="btn btn-ghost" onclick="_dubZu()">Schließen</button></div>'; return; }
   el.innerHTML = '<p class="hz-leer" style="margin-bottom:.8rem">Wähle je Paar den Datensatz, der bleibt. Journal und Projekte des anderen wandern mit, leere Felder werden ergänzt. Der zweite Datensatz kommt ins Archiv, gelöscht wird nichts.</p>'
     + d.paare.map((p,i)=>{
@@ -2570,13 +2717,13 @@ function _archivSection(title, kind, items, cols, rowFn){
 function renderArchive(a){
   const hint = t => `<br><small style="color:#f59e0b">${t}</small>`;
   document.getElementById('archiv-content').innerHTML =
-    _archivSection('🏢 Unternehmen','firma',a.firmen,['Firma','Status','Branche'],
+    _archivSection('Unternehmen','firma',a.firmen,['Firma','Status','Branche'],
       it=>`<td><strong>${_esc(it.name)}</strong></td><td>${_esc(it.status)}</td><td>${_esc(it.branch)}</td>`) +
-    _archivSection('👤 Personen','person',a.personen,['Name','Unternehmen'],
+    _archivSection('Personen','person',a.personen,['Name','Unternehmen'],
       it=>`<td><strong>${_esc(it.name)}</strong>${it.titel?'<br><small>'+_esc(it.titel)+'</small>':''}</td><td>${_esc(it.firma)}${it.firma_archiviert?hint('Unternehmen ist ebenfalls archiviert'):''}</td>`) +
-    _archivSection('📁 Projekte','projekt',a.projekte,['Projekt','Unternehmen','Status'],
+    _archivSection('Projekte','projekt',a.projekte,['Projekt','Unternehmen','Status'],
       it=>`<td><strong>${_esc(it.name)}</strong></td><td>${_esc(it.firma)}</td><td>${_esc(it.status)}</td>`) +
-    _archivSection('📋 Aufgaben','aufgabe',a.aufgaben,['ID','Aufgabe','Projekt','Status / erledigt'],
+    _archivSection('Aufgaben','aufgabe',a.aufgaben,['ID','Aufgabe','Projekt','Status / erledigt'],
       it=>`<td><span class="task-id">${_esc(it.id)}</span></td><td>${_esc(it.title)}</td><td>${_esc(it.projekt)}${it.firma?'<br><small>'+_esc(it.firma)+'</small>':''}${it.projekt_archiviert?hint('Projekt ist ebenfalls archiviert'):''}</td><td>${_esc(it.status)}${it.erledigt_am?'<br><small>'+_esc(it.erledigt_am)+'</small>':''}</td>`);
   filterArchive(document.getElementById('archiv-search').value||'');
 }
@@ -2744,8 +2891,40 @@ function parseContactText() {
 # HTML GENERATION
 # ──────────────────────────────────────────────────────────────────────────────
 
+AK_SYM = {
+    "tel": '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>',
+    "mail": '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
+    "in": '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M6.9 8.6H3.8V20h3.1zM5.3 3.5a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6zM20.2 13.5c0-3.1-1.7-4.6-3.9-4.6a3.4 3.4 0 0 0-3.1 1.7V8.6h-3V20h3.1v-5.7c0-1.5.3-2.9 2.1-2.9s1.8 1.7 1.8 3V20h3.1z"/></svg>',
+    "neu": '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
+}
+
 def badge(text, color):
-    return f'<span class="badge" style="background:{color}">{text}</span>'
+    """A3 (20.11.2026): eine Badge-Sprache - getoent statt weisser Schrift auf voller Farbe."""
+    t = str(text or "")
+    if t[:1].islower():
+        t = t[:1].upper() + t[1:]
+    return f'<span class="badge" style="color:{color};border-color:{color}33;background:{color}14">{t}</span>'
+
+def kontakt_rel(d, mit_leer=True):
+    """A4: letzter Kontakt relativ ("vor 8 Tagen") mit Punkt in der Stufe aus _fx_kontakt_stufe,
+    Datum als Tooltip."""
+    try:
+        tag = date.fromisoformat(str(d or "")[:10])
+    except ValueError:
+        return '<span class="kt kt-nie">nie</span>' if mit_leer else ""
+    tage = (date.today() - tag).days
+    if tage <= 0:
+        txt = "heute"
+    elif tage == 1:
+        txt = "gestern"
+    elif tage < 60:
+        txt = f"vor {tage} Tagen"
+    elif tage < 365:
+        txt = f"vor {round(tage / 30)} Monaten"
+    else:
+        j = round(tage / 365)
+        txt = "vor 1 Jahr" if j == 1 else f"vor {j} Jahren"
+    return f'<span class="kt kt-{_fx_kontakt_stufe(d)}" title="{tag:%d.%m.%Y}"><i></i>{txt}</span>'
 
 STATUS_COLORS = {
     "offen": "#f59e0b", "in bearbeitung": "#3b82f6", "bearbeitet": "#0d9488", "blockiert": "#ef4444",
@@ -2879,13 +3058,13 @@ def build_dashboard():
               "kt": [_fx_kontakt_stufe(c.get("last_contact"))],
               "mk": (["acos"] if c.get("acos_fuehren") else []) + (["auf"] if c["firma"].strip().lower() in offene_firmen else []),
               "az": _fx_buchstabe(c["firma"])}
-        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" data-art="{_h(c['art'])}" data-fx="{_h(json.dumps(fx, ensure_ascii=False))}" class="c-zeile" tabindex="0" role="button"
+        contact_rows += f"""<tr data-firma="{firma_esc}" data-cid="{_h(c['id'])}" data-art="{_h(c['art'])}" data-sort-name="{_h(c['firma'].lower())}" data-sort-lk="{_h(c.get('last_contact') or '')}" data-fx="{_h(json.dumps(fx, ensure_ascii=False))}" class="c-zeile" tabindex="0" role="button"
               aria-label="Akte {_h(c['firma'])} öffnen" onclick="openAkte('{cid}')" onkeydown="if(event.key==='Enter'||event.key===' '){{event.preventDefault();openAkte('{cid}')}}">
           <td><strong>{_h(c['firma'])}</strong>{'<span class="acos-badge" title="Wird in ACOS geführt">ACOS</span>' if c.get('acos_fuehren') else ''}{f'<small class="c-ort"> · {_h(ort)}</small>' if ort else ''}{person_line}</td>
           <td>{_beziehung_html(c)}</td>
-          <td>{_h(c.get('branch','')) or '<span style="color:#9ca3af">–</span>'}</td>
-          <td>{c.get('last_contact','') or '<span style="color:#9ca3af">–</span>'}</td>
-          <td class="c-next">{_h(nxt) or '<span style="color:#9ca3af">–</span>'}</td>
+          <td class="sp-branche">{_h(c.get('branch','')) or '<span style="color:#9ca3af">–</span>'}</td>
+          <td>{kontakt_rel(c.get('last_contact'))}</td>
+          <td class="c-next">{_h(nxt) or f"""<button type="button" class="c-fest" onclick="event.stopPropagation();openAkte('{cid}').then(()=>akteForm('next'))">festlegen</button>"""}</td>
         </tr>"""
     if not contact_rows:
         contact_rows = '<tr><td colspan="5" style="text-align:center;color:#6b7280">Keine Kontakte</td></tr>'
@@ -2893,15 +3072,12 @@ def build_dashboard():
     # ── PERSONEN TABLE (2026-08-21) ──
     person_rows = ""
     art_je_firma = {str(c["id"]): c.get("art") for c in contacts}
-    for p in sorted(persons, key=lambda x: (x["firma"], x["name"])):
+    def _nachname(n):
+        teile = [t for t in (n or "").replace(",", " ").split() if not t.rstrip(".").lower() in ("dr", "prof", "dipl", "ing")]
+        return (teile[-1] if teile else "").lower()
+    for p in sorted(persons, key=lambda x: (_nachname(x["name"]), x["name"].lower())):
         pid = p["id"].replace("'", "\\'")
         fid = p["firma_id"].replace("'", "\\'")
-        contact_line = "".join([
-            f' · <a href="mailto:{p["email"]}" style="color:var(--text2)">{p["email"]}</a>' if p.get("email") else "",
-            f' · {p["phone"]}' if p.get("phone") else "",
-            f' · 📱 {p["mobil"]}' if p.get("mobil") else "",
-            f' · <a href="{p["linkedin"]}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text2)">LinkedIn</a>' if p.get("linkedin") else "",
-        ])
         firma_esc = p["firma"].replace("'", "\\'").replace('"', '&quot;')
         p_art = art_je_firma.get(str(p.get("firma_id")))
         p_fx = {"art": [p_art] if p_art else [],
@@ -2909,13 +3085,26 @@ def build_dashboard():
                 "kp": [p["kampagne"].strip()] if (p.get("kampagne") or "").strip() else [],
                 "fi": [p["firma"]] if p.get("firma") else [],
                 "kt": [_fx_kontakt_stufe(p.get("last_contact"))],
-                "az": _fx_buchstabe((p.get("name") or "").split()[-1] if (p.get("name") or "").split() else "")}
-        person_rows += f"""<tr data-person="{pid}" data-person-name="{p['name'].replace('"','&quot;')}" data-fx="{_h(json.dumps(p_fx, ensure_ascii=False))}" tabindex="0" onclick="openPersonAkte('{pid}')" onkeydown="if(event.key==='Enter'){{openPersonAkte('{pid}')}}">
-          <td><strong>{p['name']}</strong>{f'<br><small style="color:var(--text2)">{p["titel"]}</small>' if p.get('titel') and not p['titel'].startswith('-') else ''}</td>
-          <td><a class="contact-link" href="#" onclick="event.stopPropagation();openContactByName('{firma_esc}')">{p['firma']}</a></td>
-          <td>{p.get('kampagne','') or '<span style="color:#9ca3af">–</span>'}</td>
+                "az": _fx_buchstabe(_nachname(p.get("name")))}
+        nr = p.get("mobil") or p.get("phone") or ""
+        tel_href = "tel:" + re.sub(r"[^+\d]", "", nr)
+        erreichen = (
+            (f'<a class="p-ikon" href="{_h(tel_href)}" title="{_h(nr)}" aria-label="{_h(p["name"])} anrufen" onclick="event.stopPropagation()">{AK_SYM["tel"]}</a>' if nr
+             else f'<span class="p-ikon leer" title="Keine Telefonnummer">{AK_SYM["tel"]}</span>')
+            + (f'<a class="p-ikon" href="mailto:{_h(p["email"])}" title="{_h(p["email"])}" aria-label="{_h(p["name"])} mailen" onclick="event.stopPropagation()">{AK_SYM["mail"]}</a>' if p.get("email")
+               else f'<span class="p-ikon leer" title="Keine E-Mail">{AK_SYM["mail"]}</span>')
+            + (f'<a class="p-ikon" href="{_h(p["linkedin"])}" target="_blank" rel="noopener" title="LinkedIn" aria-label="LinkedIn-Profil" onclick="event.stopPropagation()">{AK_SYM["in"]}</a>' if p.get("linkedin")
+               else f'<span class="p-ikon leer" title="Kein LinkedIn-Profil">{AK_SYM["in"]}</span>'))
+        initialen = "".join(w[0] for w in (p.get("name") or "?").split()[:2]).upper()
+        titel = p.get("titel") if p.get("titel") and not p["titel"].startswith("-") else ""
+        kamp = f'<span class="p-kamp">{_h(p["kampagne"])}</span>' if (p.get("kampagne") or "").strip() else ""
+        person_rows += f"""<tr data-person="{pid}" data-person-name="{p['name'].replace('"','&quot;')}" data-sort-name="{_h(_nachname(p['name']))}" data-sort-lk="{_h(p.get('last_contact') or '')}" data-fx="{_h(json.dumps(p_fx, ensure_ascii=False))}" tabindex="0" onclick="openPersonAkte('{pid}')" onkeydown="if(event.key==='Enter'){{openPersonAkte('{pid}')}}">
+          <td><div class="p-name"><span class="p-av" aria-hidden="true">{_h(initialen)}</span><div><strong>{_h(p['name'])}</strong>
+            <div class="p-unter">{_h(titel)}{kamp}</div></div></div></td>
+          <td><a class="contact-link" href="#" onclick="event.stopPropagation();openContactByName('{firma_esc}');return false">{_h(p['firma'])}</a><br><small class="p-art">{_h(ARTEN.get(p_art or '', ''))}</small></td>
           <td>{status_badge(p.get('status','')) or '<span style="color:#9ca3af">–</span>'}</td>
-          <td>{p.get('last_contact','') or '<span style="color:#9ca3af">–</span>'}<br><small style="color:var(--text2)">{contact_line.lstrip(' ·')}</small></td>
+          <td>{kontakt_rel(p.get('last_contact'))}</td>
+          <td class="p-erreichen">{erreichen}</td>
         </tr>"""
     if not person_rows:
         person_rows = '<tr><td colspan="5" style="text-align:center;color:#6b7280">Keine Personen</td></tr>'
@@ -3064,6 +3253,13 @@ def build_dashboard():
     except Exception:
         _us = dict(BENUTZER_DEFAULTS)   # Migration 004 noch nicht eingespielt
     _akz = AKZENTFARBEN.get(_us.get("akzent"), AKZENTFARBEN["indigo"])
+    _admin = darf_server_steuern(_user)
+    _kuerzel = "".join(w[0] for w in re.split(r"[\s._@-]+", _user or "") if w)[:2].upper() or "?"
+    _admin_menu = ("""<div class="kl-trenn">Server</div>
+        <button type="button" onclick="nutzerZu();serverAction('restart')">Neu starten</button>
+        <button type="button" onclick="nutzerZu();window.open(location.origin,'_blank')">In neuem Tab öffnen</button>
+        <button type="button" class="kl-gefahr" onclick="nutzerZu();serverAction('shutdown')">Stoppen</button>
+        <div class="kl-trenn"></div>""" if _admin else "")
     crm_user_json = json.dumps({"name": _user or "", **_us}, ensure_ascii=False).replace("</", "<\\/")
     contacts_json = json.dumps([{"id": c["id"], "firma": c["firma"], "ansprechpartner": c.get("ansprechpartner",""), "ansprechpartner_list": [p.get("name","") for p in c.get("ansprechpartner_list", []) if p.get("name")]} for c in contacts], ensure_ascii=False)
     tasks_json    = json.dumps([{"taskId": t["taskId"], "title": t["title"], "status": t["status"], "contact": t.get("contact",""), "ansprechpartner": t.get("ansprechpartner",""), "projektId": t.get("projektId")} for t in tasks], ensure_ascii=False)
@@ -3095,44 +3291,57 @@ def build_dashboard():
 }}
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}}
-.header{{background:var(--surface);border-bottom:1px solid var(--border);padding:.9rem 1.5rem;display:flex;align-items:center;justify-content:space-between}}
-.header h1{{font-size:1.15rem;font-weight:700;color:var(--accent2)}}
-.header-meta{{font-size:.75rem;color:var(--text2)}}
+.kopfleiste{{background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:stretch;gap:0;padding:0 1.5rem;position:sticky;top:0;z-index:40}}
+.kl-titel{{font-size:1.05rem;font-weight:700;color:var(--accent2);display:flex;align-items:center;padding-right:1.1rem;margin-right:.4rem;border-right:1px solid var(--border);white-space:nowrap}}
+.header-meta{{font-size:.75rem;color:var(--text2);display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap}}
 .header-meta a{{color:var(--accent);text-decoration:none}}
-.nav{{display:flex;align-items:stretch;background:var(--surface);border-bottom:1px solid var(--border);padding:0 1.5rem;position:relative;z-index:30}}
+.kl-neu{{background:none;border:0;color:var(--accent);cursor:pointer;padding:.2rem;display:inline-flex;border-radius:6px}}
+.kl-neu:hover{{background:var(--surface2)}}
+.kl-rechts{{margin-left:auto;display:flex;align-items:center;gap:.9rem;padding-left:1rem}}
+.kl-suche{{display:flex;align-items:center;gap:.3rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:0 .4rem 0 .65rem;width:240px}}
+.kl-suche:focus-within{{border-color:var(--accent);background:var(--surface)}}
+.kl-suche input{{border:0;background:none;outline:none;font:inherit;font-size:.82rem;padding:.42rem 0;flex:1;min-width:0;color:var(--text)}}
+.kl-suche kbd{{font:inherit;font-size:.7rem;color:var(--text2);border:1px solid var(--border);border-radius:4px;padding:0 .3rem;background:var(--surface)}}
+.kl-nutzer{{position:relative}}
+.kl-kuerzel{{display:flex;align-items:center;gap:.3rem;background:none;border:0;cursor:pointer;font:inherit;color:var(--text2);padding:.15rem}}
+.kl-kuerzel b{{width:30px;height:30px;border-radius:50%;background:#e0e7ff;color:var(--accent2);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700}}
+.kl-menu{{display:none;position:absolute;right:0;top:calc(100% + 6px);min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(15,23,42,.12);padding:.35rem;z-index:50}}
+.kl-nutzer.open .kl-menu{{display:block}}
+.kl-menu button,.kl-menu a{{display:block;width:100%;text-align:left;background:none;border:0;font:inherit;font-size:.85rem;color:var(--text);padding:.5rem .65rem;border-radius:6px;cursor:pointer;text-decoration:none}}
+.kl-menu button:hover,.kl-menu a:hover{{background:var(--surface2)}}
+.kl-menu .kl-gefahr{{color:#b91c1c}}
+.kl-wer{{font-size:.75rem;color:var(--text2);padding:.45rem .65rem .35rem}}
+.kl-trenn{{font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text2);padding:.5rem .65rem .15rem;border-top:1px solid var(--border);margin-top:.3rem}}
+.kl-trenn:empty{{padding:0;margin:.3rem 0 .2rem}}
+.nav{{display:flex;align-items:stretch;background:none;position:relative;z-index:30;min-width:0}}
 .nav-favs{{display:flex}}
-.nav-groups{{display:flex;flex:1;border-left:1px solid var(--border);margin-left:.4rem;padding-left:.4rem}}
+.nav-groups{{display:flex}}
 .nav-group{{position:relative;display:flex}}
-.nav-group.nur-favs{{display:none}}
-.nav-rechts{{margin-left:auto}}
-.nav-gbtn{{background:none;border:0;border-bottom:2px solid transparent;padding:.7rem 1rem;font-size:.875rem;color:var(--text2);cursor:pointer;font-family:inherit;white-space:nowrap}}
+.nav-gbtn{{background:none;border:0;border-bottom:2px solid transparent;padding:.95rem 1rem .85rem;font-size:.875rem;color:var(--text2);cursor:pointer;font-family:inherit;white-space:nowrap}}
 .nav-gbtn:hover,.nav-group.open .nav-gbtn{{color:var(--text)}}
 .nav-group.aktiv .nav-gbtn{{color:var(--accent2);border-bottom-color:var(--accent2)}}
 .nav-pfeil{{font-size:.7rem;opacity:.7}}
-.nav-glabel{{display:none}}
-.nav-menu{{display:none;position:absolute;top:100%;left:0;min-width:210px;background:var(--surface);border:1px solid var(--border);border-radius:0 0 10px 10px;box-shadow:0 12px 30px rgba(15,23,42,.12);padding:.3rem 0}}
-.nav-rechts .nav-menu{{left:auto;right:0}}
+.nav-menu{{display:none;position:absolute;top:100%;left:0;min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:0 0 10px 10px;box-shadow:0 12px 30px rgba(15,23,42,.12);padding:.3rem 0 .4rem;z-index:40}}
 .nav-group.open .nav-menu{{display:block}}
-.nav-menu .tab{{border-bottom:0;border-left:3px solid transparent;padding:.55rem 1rem}}
+.nav-abschnitt{{font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text2);padding:.6rem 1rem .2rem}}
+.nav-menu .tab{{border-bottom:0;border-left:3px solid transparent;padding:.5rem 1rem;display:flex;justify-content:space-between;gap:1rem}}
 .nav-menu .tab:hover{{background:var(--surface2)}}
 .nav-menu .tab.active{{border-left-color:var(--accent2);background:var(--surface2)}}
 .nav-menu .tab.is-fav{{display:none}}
-.nav-direkt>.tab.is-fav{{display:none}}
-.nav-direkt>.tab{{padding:.7rem 1rem}}
+.nav-zahl{{font-size:.75rem;color:var(--text2)}}
+.nav-favs .nav-zahl{{display:none}}
 .nav-burger{{display:none;background:none;border:0;font-size:1rem;font-weight:600;color:var(--text);padding:.7rem 0;cursor:pointer;font-family:inherit}}
 @media (max-width:700px){{
-  .nav{{padding:0 1rem;flex-direction:column}}
+  .kopfleiste{{padding:0 1rem;flex-wrap:wrap}}
+  .kl-titel{{font-size:.95rem;border:0;padding:.75rem .5rem .75rem 0}}
+  .nav{{order:3;width:100%;flex-direction:column;border-top:1px solid var(--border)}}
   .nav-burger{{display:flex;gap:.5rem;align-items:center}}
   .nav-favs,.nav-groups{{display:none}}
-  .nav.open .nav-groups{{display:flex;flex-direction:column;border:0;margin:0;padding:0 0 .6rem}}
-  .nav.open .nav-group,.nav.open .nav-group.nur-favs{{display:block}}
-  .nav.open .nav-gbtn{{padding:.6rem 0 .2rem;font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;cursor:default;border:0;color:var(--text2)}}
-  .nav.open .nav-gbtn .nav-pfeil{{display:none}}
-  .nav.open .nav-gbtn .nav-icon{{display:none}}
-  .nav.open .nav-gbtn .nav-glabel{{display:inline}}
+  .nav.open .nav-groups{{display:flex;flex-direction:column;padding:0 0 .6rem}}
+  .nav.open .nav-gbtn{{display:none}}
   .nav.open .nav-menu{{display:block;position:static;box-shadow:none;border:0;padding:0;min-width:0}}
-  .nav.open .nav-menu .tab,.nav.open .nav-menu .tab.is-fav{{display:block;padding:.6rem .5rem;font-size:1rem}}
-  .nav-rechts{{margin-left:0}}
+  .nav.open .nav-menu .tab,.nav.open .nav-menu .tab.is-fav{{display:flex;padding:.6rem .5rem;font-size:1rem}}
+  .nav.open .nav-abschnitt{{padding-left:.5rem}}
 }}
 .tab{{padding:.7rem 1.2rem;cursor:pointer;font-size:.875rem;color:var(--text2);border-bottom:2px solid transparent;white-space:nowrap;transition:all .15s}}
 .tab:hover{{color:var(--text)}}
@@ -3152,7 +3361,41 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .kpi-label{{display:block;font-size:.68rem;color:var(--text2)}}
 .toolbar{{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}}
 .filter-bar{{display:flex;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap}}
-.fx-sichten{{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:.6rem}}
+.st-kopf{{margin-bottom:.8rem}}
+.st-kopf .btn{{white-space:nowrap}}
+.st-titel{{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap}}
+.fx-pills{{display:flex;gap:.35rem;flex-wrap:wrap}}
+.fx-pill{{font:inherit;font-size:.8rem;padding:.22rem .7rem;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:#334155;cursor:pointer}}
+.fx-pill b{{font-weight:700;color:var(--text)}}
+.fx-pill.on{{background:#eef2ff;border-color:var(--accent);color:var(--accent2)}}
+.fx-pill.on b{{color:var(--accent2)}}
+.fx-zeile{{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-bottom:.55rem}}
+.fx-zeile .fx{{display:contents}}
+.fx-suche{{flex:0 1 300px;min-width:200px;margin:0}}
+.fx-dd{{position:relative}}
+.fx-ddbtn{{font:inherit;font-size:.8rem;padding:.32rem .65rem;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:#334155;cursor:pointer;white-space:nowrap}}
+.fx-ddbtn:hover,.fx-dd.open .fx-ddbtn{{border-color:var(--accent)}}
+.fx-ddmenu{{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:35;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(15,23,42,.12);padding:.55rem;min-width:240px;max-width:420px;max-height:320px;overflow:auto}}
+.fx-dd.open .fx-ddmenu{{display:block}}
+.fx-aktiv{{font:inherit;font-size:.8rem;padding:.32rem .65rem;border-radius:7px;border:1px solid var(--accent);background:#eef2ff;color:var(--accent2);cursor:pointer;white-space:nowrap}}
+.fx-aktiv span{{margin-left:.2rem;opacity:.7}}
+.fx-hinweis{{font-size:.78rem;color:var(--text2);margin:0 0 .4rem}}
+.fx-sort{{white-space:nowrap}} .fx-sort b{{font-weight:600;color:var(--text)}}
+.st-tabelle{{overflow:auto;max-height:calc(100vh - 210px);border:1px solid var(--border);border-radius:10px;background:var(--surface)}}
+.c-fest{{font:inherit;font-size:.8rem;background:none;border:0;color:var(--accent);text-decoration:underline;cursor:pointer;padding:0}}
+.dub-hinweis{{display:flex;justify-content:space-between;align-items:center;gap:1rem;background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:10px;padding:.5rem .9rem;font-size:.85rem;margin-bottom:.6rem}}
+.dub-hinweis[hidden]{{display:none}}
+.dub-hinweis .hz-link{{color:#92400e;font-weight:600;text-decoration:underline;background:none;border:0;cursor:pointer;font-size:.85rem}}
+.p-name{{display:flex;align-items:center;gap:.6rem}}
+.p-av{{flex:0 0 30px;height:30px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700}}
+.p-unter{{font-size:.78rem;color:var(--text2)}}
+.p-kamp{{display:inline-block;margin-left:.35rem;font-size:.68rem;font-weight:600;color:#9d174d;background:#fce7f3;border-radius:999px;padding:0 .45rem}}
+.p-art{{color:var(--text2);font-size:.75rem}}
+.p-erreichen{{white-space:nowrap;text-align:right}}
+.p-ikon{{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--border);border-radius:8px;color:#334155;margin-left:.25rem;background:var(--surface)}}
+a.p-ikon:hover{{border-color:var(--accent);color:var(--accent2)}}
+.p-ikon.leer{{opacity:.3}}
+.fx-sichten{{display:flex;flex-wrap:wrap;align-items:center;gap:6px}}
 .fx-lb{{font-size:.72rem;color:var(--text2);min-width:104px;padding-top:4px}}
 .fx-grp{{display:flex;align-items:flex-start;gap:8px;margin-bottom:4px}}
 .fx-chips{{display:flex;flex-wrap:wrap;gap:5px;flex:1}}
@@ -3168,12 +3411,12 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .fx-sicht .fx-x:hover{{opacity:1;color:#b91c1c}}
 .fx-sicht.on{{background:#eef2ff;border-color:var(--accent)}}
 .fx-sicht.on button{{color:var(--accent)}}
-.fx-az{{display:flex;flex-wrap:wrap;gap:2px;margin:.5rem 0 .4rem}}
+.fx-az{{display:flex;flex-wrap:wrap;gap:1px}}
 .fx-az button{{font:inherit;font-size:.72rem;min-width:22px;padding:3px 0;border:0;border-radius:4px;background:none;color:var(--text2);cursor:pointer}}
 .fx-az button:hover:not(:disabled){{background:var(--surface2)}}
 .fx-az button.on{{background:#eef2ff;color:var(--accent)}}
 .fx-az button:disabled{{opacity:.3;cursor:default}}
-.fx-fuss{{display:flex;justify-content:space-between;align-items:center;font-size:.78rem;color:var(--text2);margin-bottom:.4rem}}
+.fx-fuss{{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;font-size:.78rem;color:var(--text2);margin-bottom:.45rem}}
 .fx-lnk{{font:inherit;font-size:.78rem;background:none;border:0;color:var(--accent);cursor:pointer;padding:3px 4px}}
 tr.fx-aus{{display:none}}
 @media (max-width:700px){{.fx-grp{{flex-direction:column;gap:2px}}.fx-lb{{min-width:0}}}}
@@ -3185,7 +3428,10 @@ thead th{{background:var(--surface2);color:var(--text2);padding:.55rem .7rem;tex
 tbody tr{{border-bottom:1px solid var(--border);transition:background .1s}}
 tbody tr:hover{{background:var(--surface2)}}
 td{{padding:.55rem .7rem;vertical-align:top}}
-.badge{{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.69rem;font-weight:600;color:#fff;white-space:nowrap}}
+.badge{{display:inline-block;padding:1px 8px;border-radius:999px;font-size:.72rem;font-weight:600;border:1px solid;white-space:nowrap}}
+.kt{{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}}
+.kt i{{width:7px;height:7px;border-radius:50%;background:#16a34a;flex-shrink:0}}
+.kt-m i{{background:#d97706}} .kt-r i{{background:#dc2626}} .kt-nie{{color:#9ca3af}} .kt-nie i{{background:#cbd5e1}}
 .task-id{{font-family:monospace;font-size:.72rem;color:var(--text2);background:var(--surface2);padding:2px 5px;border-radius:4px}}
 tr.hidden{{display:none}}
 /* ── KONTAKT-LOG DRAWER ── */
@@ -3232,11 +3478,18 @@ tr.hidden{{display:none}}
 .firma-sub-row td:first-child{{padding-left:2rem;color:var(--text2)}}
 /* MODAL */
 #nav .nav-menu .tab.nav-versteckt{{display:none!important}}
+.nav-favs .tab{{padding:.95rem 1rem .85rem}}
 /* Heute: Journal, Abschluss, Briefing (Migration 010) */
 .hs-kopf{{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}}
 .hs-datum{{font-size:.85rem;color:var(--text2)}}
 .hs-gruss{{margin:.15rem 0 .25rem;font-size:1.6rem}}
-.hs-lage{{font-size:.92rem;color:#334155}}
+.hs-lage{{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.35rem}}
+.hs-chip{{display:inline-flex;align-items:baseline;gap:.3rem;background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:.25rem .7rem;font:inherit;font-size:.82rem;color:#334155;cursor:pointer}}
+.hs-chip b{{font-weight:700;color:var(--text)}}
+.hs-chip:hover{{border-color:var(--accent)}}
+.hs-chip.rot{{background:#fef2f2;border-color:#fca5a5;color:#b91c1c}}
+.hs-chip.rot b{{color:#b91c1c}}
+.hs-chip.still{{cursor:default}} .hs-chip.still:hover{{border-color:var(--border)}}
 .hs-aktionen{{display:flex;gap:.5rem;flex-wrap:wrap}}
 .hs-raster{{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:1rem;align-items:start}}
 .hs-spalte{{display:flex;flex-direction:column;gap:1rem;min-width:0}}
@@ -3248,8 +3501,20 @@ tr.hidden{{display:none}}
 .hs-karte>div:last-child{{padding-bottom:.4rem}}
 .hs-karte .hz-leer{{padding:.8rem 1rem;margin:0}}
 .hs-gruppe{{padding:.65rem 1rem .2rem;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text2)}}
-.hs-task{{display:flex;align-items:flex-start;gap:.7rem;padding:.55rem 1rem;border-bottom:1px solid #f1f5f9}}
-.hs-task input{{width:19px;height:19px;margin-top:2px;flex:0 0 auto}}
+.hs-task{{display:flex;align-items:flex-start;gap:.5rem;padding:.45rem 1rem .45rem .6rem;border-bottom:1px solid #f1f5f9;border-left:3px solid transparent}}
+.hs-task.ueber{{border-left-color:#dc2626}}
+.hs-cb{{flex:0 0 auto;width:36px;height:36px;margin:-.35rem 0 -.35rem;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px}}
+.hs-cb:hover{{background:var(--surface2)}}
+.hs-cb input{{width:19px;height:19px;margin:0;cursor:pointer}}
+.hs-rechts{{display:flex;flex-direction:column;align-items:flex-end;gap:.25rem;flex:0 0 auto}}
+.hs-morgen{{background:none;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:.72rem;color:var(--text2);padding:.1rem .45rem;cursor:pointer;white-space:nowrap}}
+.hs-morgen:hover{{border-color:var(--accent);color:var(--accent2)}}
+.hs-gruppe{{display:flex;justify-content:space-between;align-items:baseline}}
+.hs-gruppe.rot{{color:#b91c1c}}
+.hs-gruppe button{{text-transform:none;letter-spacing:0;font-weight:500}}
+.hs-woche{{display:flex;gap:.6rem;align-items:baseline;padding:.6rem 1rem;font-size:.82rem;color:#334155}}
+.hs-woche b{{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text2);white-space:nowrap}}
+.hs-woche span{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .hs-task.erl .hs-titel{{text-decoration:line-through;color:var(--text2)}}
 .hs-tt{{flex:1 1 auto;min-width:0}}
 .hs-titel{{background:none;border:0;padding:0;font:inherit;font-size:.9rem;font-weight:500;color:var(--text);text-align:left;cursor:pointer}}
@@ -3257,7 +3522,15 @@ tr.hidden{{display:none}}
 .hs-wo{{font-size:.78rem;color:var(--text2);margin-top:2px}}
 .hs-due{{font-size:.78rem;color:var(--text2);white-space:nowrap}}
 .hs-due.rot{{color:#b91c1c;font-weight:600}}
-.hs-mail{{padding:.6rem 1rem;border-bottom:1px solid #f1f5f9}}
+.hs-mail{{display:flex;gap:.75rem;padding:.65rem 1rem;border-bottom:1px solid #f1f5f9}}
+.hs-ml{{flex:1 1 auto;min-width:0}}
+.hs-mr{{display:flex;flex-direction:column;align-items:flex-end;gap:.3rem;flex:0 0 auto}}
+.hs-mbetreff{{font-size:.86rem;color:#334155;margin-top:.1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.hs-etiketten{{display:flex;gap:.3rem;flex-wrap:wrap;margin-top:.3rem}}
+.hs-et{{font-size:.72rem;font-weight:600;border-radius:999px;padding:.05rem .5rem;background:#eef2ff;color:#3730a3}}
+.hs-et.grau{{background:#f1f5f9;color:#475569}} .hs-et.gelb{{background:#fef3c7;color:#92400e}}
+.hs-pruefen{{background:var(--surface);border:1px solid var(--accent);color:var(--accent2)}}
+.hs-spaeter{{background:none;border:0;padding:0;font:inherit;font-size:.75rem;color:var(--text2);text-decoration:underline;cursor:pointer}}
 .hs-mk{{display:flex;gap:.3rem;align-items:baseline;font-size:.86rem;min-width:0}}
 .hs-mvon{{font-weight:600;white-space:nowrap}}
 .hs-mbetr{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#334155}}
@@ -3347,13 +3620,33 @@ button.hz-link:disabled{{opacity:.5}}
 .hz-aktion textarea{{flex:1;min-width:14rem;min-height:2.6rem;font:inherit;font-size:.84rem;padding:.45rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text)}}
 .hz-meta{{font-size:.75rem;color:var(--text2);margin-top:.6rem}}
 .hz-notiz{{font-size:.85rem;font-style:italic;border-left:3px solid var(--accent);padding:.15rem .7rem;margin:.2rem 0 .4rem}}
-.hz-briefing{{border:1px solid var(--accent);border-radius:12px;background:var(--surface);padding:.85rem 1.1rem;margin-bottom:1.1rem}}
-.hz-briefing summary{{cursor:pointer;font-weight:700;font-size:.9rem;list-style:none;display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap}}
+.hz-briefing{{border:1px solid var(--border);border-radius:12px;background:var(--surface);margin-bottom:1rem;overflow:hidden}}
+.hz-briefing summary{{cursor:pointer;font-weight:700;font-size:.9rem;list-style:none;display:flex;align-items:baseline;gap:.75rem;flex-wrap:wrap;background:#eef2ff;padding:.6rem 1rem;color:var(--accent2)}}
+.hz-briefing summary .hz-auf{{margin-left:auto;font-weight:400;font-size:.78rem;color:var(--accent)}}
+.hz-briefing:not([open]) summary{{background:var(--surface)}}
+.hb-hinweise{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}}
+.hb-hinweise div{{position:relative;padding:.7rem 1rem .7rem 2.1rem;font-size:.85rem;line-height:1.45;border-right:1px solid var(--border)}}
+.hb-hinweise div:last-child{{border-right:0}}
+.hb-hinweise div::before{{content:'→';position:absolute;left:1rem;top:.7rem;color:var(--accent);font-weight:700}}
+.hb-hinweise a{{color:var(--accent2)}}
+.hb-mehr{{display:flex;gap:1.5rem;flex-wrap:wrap;padding:.55rem 1rem;border-top:1px solid var(--border);font-size:.8rem;color:#334155}}
+.hb-mehr b{{font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text2);margin-right:.4rem}}
+.hb-mehr small{{color:var(--text2)}}
+.hb-bew{{padding:.2rem 1rem .8rem;border-top:1px solid var(--border)}}
+.hs-bilanz{{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);margin-top:1rem}}
+.hs-bl{{border-right:1px solid var(--border);min-width:0}}
+.hs-br{{min-width:0}}
+.hs-bilanz .hz-liste{{border:0;border-radius:0}}
+.hz-uhr{{margin-left:auto;font-size:.75rem;color:var(--text2);white-space:nowrap}}
+.hs-br #h-abschluss{{padding:.8rem 1rem}}
+.hs-br .hz-zahl{{flex:1 1 0;padding:.5rem .4rem}}
+.hs-br .hz-zahl.rot{{background:#fef2f2;border-color:#fca5a5;color:#b91c1c}}
 .hz-briefing summary::-webkit-details-marker{{display:none}}
 .hz-briefing summary small{{font-weight:400;color:var(--text2)}}
 .hz-briefing .hz-karte{{border:0;padding:.6rem 0 0}}
 .hz-alt{{border-color:var(--border)}}
 .hz-spalten{{display:grid;grid-template-columns:1fr 1fr;gap:0 1.5rem}}
+@media (max-width:900px){{ .hs-bilanz{{grid-template-columns:1fr}} .hs-bl{{border-right:0;border-bottom:1px solid var(--border)}} .hb-hinweise div{{border-right:0;border-bottom:1px solid var(--border)}} }}
 @media(max-width:720px){{.hz-spalten{{grid-template-columns:1fr}}.hz-art{{flex-basis:4.2rem}}}}
 /* Dubletten (Migration 010) */
 .dub-paar{{border:1px solid var(--border);border-radius:10px;padding:.75rem .85rem;margin-bottom:.75rem}}
@@ -3440,9 +3733,24 @@ button.hz-link:disabled{{opacity:.5}}
 .c-next{{font-size:.82rem;color:var(--text2);max-width:260px}}
 #modal-contact.kurz .nur-lang,#modal-contact.kurz #c-related{{display:none!important}}
 .akte-overlay{{position:fixed;inset:0;background:rgba(15,23,42,.18);opacity:0;pointer-events:none;transition:opacity .2s;z-index:60}}
+.ak-titel .ak-fakten{{display:flex;gap:.9rem;flex-wrap:wrap;font-size:.8rem;color:var(--text2);margin-top:.35rem}}
+.ak-fakten .rot{{color:#b91c1c;font-weight:600}}
+.ak-haupt{{gap:.35rem}}
+.ak-aufgabe.ueber{{border-color:#fca5a5;box-shadow:inset 3px 0 0 #dc2626}}
+.ak-stammzeile{{display:flex;align-items:baseline;gap:.75rem;padding:.7rem 1rem}}
+.ak-stammzeile h3{{margin:0;font-size:.95rem}}
+.ak-stammzeile span{{flex:1;min-width:0;font-size:.85rem;color:var(--text2)}}
 .akte-overlay.offen{{opacity:1;pointer-events:auto}}
 .akte{{position:fixed;top:0;right:0;bottom:0;width:min(640px,100vw);background:var(--surface);box-shadow:-12px 0 32px rgba(15,23,42,.14);transform:translateX(105%);transition:transform .22s ease;z-index:61;display:flex;flex-direction:column}}
 .akte.offen{{transform:none}}
+@media (min-width:1100px){{
+  .akte-overlay{{display:none}}
+  .akte{{top:var(--kopf-h,0px);width:min(640px,50vw);box-shadow:none;border-left:1px solid var(--border);z-index:30}}
+  body.akte-offen .panels{{margin-right:min(640px,50vw)}}
+  body.akte-offen .sp-branche{{display:none}}
+  body.akte-offen .fx-az{{display:none}}
+  body.akte-offen .st-kopf{{flex-wrap:nowrap}}
+}}
 #akte-inhalt{{display:flex;flex-direction:column;min-height:0;flex:1}}
 .ak-lade{{padding:2rem;color:var(--text2)}}
 .ak-kopf{{padding:1.1rem 1.3rem 0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:.75rem}}
@@ -3713,9 +4021,6 @@ tr.st-hidden{{display:none !important}}
 @media (max-width:700px){{
   .nur-handy{{display:inline-flex !important}}
   .nur-gross{{display:none !important}}
-  .header{{flex-wrap:wrap;gap:.5rem;padding:.75rem 1rem}}
-  .header h1{{font-size:1rem}}
-  .header > div{{width:100%;justify-content:space-between}}
 }}
 .j-seg{{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}}
 .j-seg button{{background:var(--surface);border:0;padding:.4rem .8rem;font-size:.8rem;cursor:pointer;color:var(--text2)}}
@@ -3817,53 +4122,49 @@ tr.st-hidden{{display:none !important}}
 </head>
 <body>
 {_test_banner()}
-<div class="header">
-  <h1>CRM · Digitale Konzepte</h1>
-  <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-    <span class="header-meta">Stand: {generated} · <a href="javascript:location.reload()">Aktualisieren</a></span>
-    <div style="display:flex;gap:.4rem">
-      <button class="nur-gross btn btn-ghost" style="font-size:.75rem;padding:.3rem .7rem" onclick="serverAction('restart')" title="Server neu starten">↺ Restart</button>
-      <button class="nur-gross btn btn-ghost" style="font-size:.75rem;padding:.3rem .7rem" onclick="window.open(location.origin,'_blank')" title="In neuem Tab öffnen">⧉ Open</button>
-      <button class="nur-gross btn btn-danger" style="font-size:.75rem;padding:.3rem .7rem" onclick="serverAction('shutdown')" title="Server stoppen">⏹ Stop</button>
-      <a class="btn btn-ghost nur-handy" style="font-size:.75rem;padding:.3rem .7rem;text-decoration:none" href="/m" onclick="try{{sessionStorage.removeItem('crm_desktop')}}catch(e){{}}" title="Zur kompakten Handy-Ansicht">📱 Kompaktansicht</a>
-      <button class="btn btn-ghost" style="font-size:.75rem;padding:.3rem .7rem" onclick="logout()" title="Abmelden">🔒 Logout</button>
+<div class="kopfleiste" id="kopfleiste">
+  <h1 class="kl-titel">CRM · Digitale Konzepte</h1>
+  <nav class="nav" id="nav">
+    <button class="nav-burger" type="button" onclick="navBurger(event)" aria-label="Menü öffnen">☰ <span id="nav-aktuell">Heute</span></button>
+    <div class="nav-favs" id="nav-favs"></div>
+    <div class="nav-groups" id="nav-groups">
+      <div class="nav-group">
+        <button class="nav-gbtn" type="button" onclick="navGruppe(event,this)">Mehr <span class="nav-pfeil">▾</span></button>
+        <div class="nav-menu">
+          <div class="nav-abschnitt">Tagesgeschäft</div>
+          <div class="tab active" data-panel="heute" onclick="showPanel('heute',this)">Heute <span class="nav-zahl">{len(overdue)+len(today_t)+len(heute_candidates)}</span></div>
+          <div class="tab" data-panel="tasks" onclick="showPanel('tasks',this)">Aufgaben <span class="nav-zahl">{len(active_tasks)}</span></div>
+          <div class="tab" data-panel="pipeline" onclick="showPanel('pipeline',this)">Projekte <span class="nav-zahl">{len(project_groups)}</span></div>
+          <div class="tab" data-panel="mailreview" onclick="showPanel('mailreview',this)">Mail-Review <span class="nav-zahl">{len(mail_review_items)}</span></div>
+          <div class="tab" id="tab-journal" data-panel="journal" onclick="showPanel('journal',this)">Journal</div>
+          <div class="nav-abschnitt">Stammdaten</div>
+          <div class="tab" data-panel="contacts" onclick="showPanel('contacts',this)">Unternehmen <span class="nav-zahl">{len(contacts)}</span></div>
+          <div class="tab" data-panel="persons" onclick="showPanel('persons',this)">Personen <span class="nav-zahl">{len(persons)}</span></div>
+          <div class="tab" id="tab-wissen" data-panel="wissen" onclick="showPanel('wissen',this)">Recherche</div>
+          <div class="nav-abschnitt">System</div>
+          <div class="tab" data-panel="archiv" onclick="showPanel('archiv',this)">Archiv</div>
+          <div class="tab" id="tab-einstellungen" data-panel="einstellungen" onclick="showPanel('einstellungen',this)">Einstellungen</div>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <div class="kl-rechts">
+    <label class="kl-suche nur-gross" title="Recherche über alle Bereiche (Taste /)">
+      <input id="kl-q" type="search" placeholder="Recherche" autocomplete="off" aria-label="Recherche"
+        onkeydown="if(event.key==='Enter'){{event.preventDefault();kopfSuche(this.value)}}"><kbd>/</kbd></label>
+    <span class="header-meta nur-gross">Stand {generated[-5:]} <button type="button" class="kl-neu" onclick="location.reload()" title="Aktualisieren (Stand {generated})">{AK_SYM['neu']}</button></span>
+    <div class="kl-nutzer" id="kl-nutzer">
+      <button type="button" class="kl-kuerzel" onclick="nutzerMenu(event)" aria-haspopup="true" aria-label="Benutzermenü"><b>{_h(_kuerzel)}</b><span class="nav-pfeil">▾</span></button>
+      <div class="kl-menu" role="menu">
+        <div class="kl-wer">Angemeldet als <b>{_h(_user or '')}</b></div>
+        <button type="button" onclick="nutzerZu();showPanel('einstellungen', document.getElementById('tab-einstellungen'))">Einstellungen</button>
+        <a class="nur-handy" href="/m" onclick="try{{sessionStorage.removeItem('crm_desktop')}}catch(e){{}}">Kompaktansicht</a>
+        {_admin_menu}
+        <button type="button" onclick="logout()">Abmelden</button>
+      </div>
     </div>
   </div>
 </div>
-
-<nav class="nav" id="nav">
-  <button class="nav-burger" type="button" onclick="navBurger(event)" aria-label="Menü öffnen">☰ <span id="nav-aktuell">Heute</span></button>
-  <div class="nav-favs" id="nav-favs"></div>
-  <div class="nav-groups" id="nav-groups">
-    <div class="nav-group">
-      <button class="nav-gbtn" type="button" onclick="navGruppe(event,this)">Tagesgeschäft <span class="nav-pfeil">▾</span></button>
-      <div class="nav-menu">
-        <div class="tab active" data-panel="heute" onclick="showPanel('heute',this)">☀️ Heute ({len(overdue)+len(today_t)+len(heute_candidates)})</div>
-        <div class="tab" data-panel="tasks" onclick="showPanel('tasks',this)">📋 Aufgaben ({len(active_tasks)})</div>
-        <div class="tab" data-panel="pipeline" onclick="showPanel('pipeline',this)">📁 Projekte ({len(project_groups)})</div>
-        <div class="tab" data-panel="mailreview" onclick="showPanel('mailreview',this)">✉️ Mail-Review ({len(mail_review_items)})</div>
-        <div class="tab nav-versteckt" id="tab-journal" data-panel="journal" onclick="showPanel('journal',this)">📓 Journal</div>
-      </div>
-    </div>
-    <div class="nav-group">
-      <button class="nav-gbtn" type="button" onclick="navGruppe(event,this)">Stammdaten <span class="nav-pfeil">▾</span></button>
-      <div class="nav-menu">
-        <div class="tab" data-panel="contacts" onclick="showPanel('contacts',this)">🏢 Unternehmen ({len(contacts)})</div>
-        <div class="tab" data-panel="persons" onclick="showPanel('persons',this)">👤 Kontakte ({len(persons)})</div>
-      </div>
-    </div>
-    <div class="nav-group nav-direkt">
-      <div class="tab" id="tab-wissen" data-panel="wissen" onclick="showPanel('wissen',this)">🔎 Recherche</div>
-    </div>
-    <div class="nav-group nav-rechts">
-      <button class="nav-gbtn" type="button" onclick="navGruppe(event,this)" title="System"><span class="nav-icon">⚙️</span><span class="nav-glabel">System</span> <span class="nav-pfeil">▾</span></button>
-      <div class="nav-menu">
-        <div class="tab" data-panel="archiv" onclick="showPanel('archiv',this)">🗄 Archiv</div>
-        <div class="tab" id="tab-einstellungen" data-panel="einstellungen" onclick="showPanel('einstellungen',this)">⚙️ Einstellungen</div>
-      </div>
-    </div>
-  </div>
-</nav>
 
 <!-- Hinweise auf faellige Aufgaben stehen seit Umbau 11 auf "Heute" -->
 
@@ -3871,18 +4172,18 @@ tr.st-hidden{{display:none !important}}
 
 <!-- ══ HEUTE ═════════════════════════════════════════════════════════ -->
 <div id="view-heute" class="panel active">
-  <div id="h-briefing"></div>
   <div class="hs-kopf">
     <div><div class="hs-datum" id="hs-datum"></div><h2 class="hs-gruss" id="hs-gruss">Heute</h2><div class="hs-lage" id="hs-lage">Wird geladen…</div></div>
     <div class="hs-aktionen">
-      <button type="button" class="btn btn-ghost" onclick="newTask()">＋ Aufgabe</button>
-      <button type="button" class="btn btn-ghost" onclick="journalNeuAusHeute()">＋ Journal-Eintrag</button>
-      <button type="button" class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
+      <button type="button" class="btn btn-ghost" onclick="journalNeuAusHeute()">＋ Journal</button>
+      <button type="button" class="btn btn-ghost" onclick="newContact()">＋ Unternehmen</button>
+      <button type="button" class="btn btn-primary" onclick="newTask()">＋ Aufgabe</button>
     </div>
   </div>
+  <div id="h-briefing"></div>
   <div class="hs-raster">
     <div class="hs-spalte">
-      <section class="hs-karte" aria-label="Aufgaben"><div class="hs-kk"><h3>Zu erledigen</h3><span id="hs-erl"></span>
+      <section class="hs-karte" id="hs-karte-aufgaben" aria-label="Aufgaben"><div class="hs-kk"><h3>Zu erledigen</h3><span id="hs-erl"></span>
         <a href="#" class="hz-link" onclick="showPanel('tasks', document.querySelector('.tab[data-panel=tasks]'));return false">Alle Aufgaben</a></div>
         <div id="hs-aufgaben"><p class="hz-leer">Wird geladen…</p></div></section>
       <section class="hs-karte" aria-label="Mail-Review"><div class="hs-kk"><h3>Mail-Review</h3><span id="hs-mailzahl"></span>
@@ -3890,7 +4191,7 @@ tr.st-hidden{{display:none !important}}
         <div id="hs-mails"></div></section>
     </div>
     <div class="hs-spalte">
-      <section class="hs-karte" aria-label="Termine"><div class="hs-kk"><h3>Termine</h3><span id="hs-kalstand"></span>
+      <section class="hs-karte" id="hs-karte-termine" aria-label="Termine"><div class="hs-kk"><h3>Termine</h3><span id="hs-kalstand"></span>
         <button type="button" class="hz-link" title="Kalender jetzt abrufen" onclick="kalenderAbgleich(this)">↺ Abrufen</button></div>
         <div id="hs-termine"></div></section>
       <section class="hs-karte" aria-label="Im Blick"><div class="hs-kk"><h3>Im Blick</h3><span>ohne Termin, aber fällig</span></div>
@@ -3898,23 +4199,24 @@ tr.st-hidden{{display:none !important}}
     </div>
   </div>
 
-  <section class="hz-block">
-    <div class="hz-kopf"><h3>📓 Heute erledigt und erfasst</h3>
-      <span class="hz-links"><button type="button" class="btn btn-ghost hz-klein" onclick="journalNeuAusHeute()">＋ Eintrag</button>
-      <a href="#" class="hz-link" onclick="showPanel('journal', document.getElementById('tab-journal'));return false">Ganzes Journal →</a></span></div>
-    <div id="h-tag"><p class="hz-leer">Wird geladen…</p></div>
-  </section>
-
-  <section class="hz-block">
-    <div class="hz-kopf"><h3>🌙 Tagesabschluss</h3></div>
-    <div id="h-abschluss"><p class="hz-leer">Wird geladen…</p></div>
+  <section class="hs-karte hs-bilanz" aria-label="Tagesbilanz">
+    <div class="hs-bl">
+      <div class="hs-kk"><h3>Heute erledigt und erfasst</h3>
+        <button type="button" class="hz-link" onclick="journalNeuAusHeute()">＋ Eintrag</button>
+        <a href="#" class="hz-link" onclick="showPanel('journal', document.getElementById('tab-journal'));return false">Journal →</a></div>
+      <div id="h-tag"><p class="hz-leer">Wird geladen…</p></div>
+    </div>
+    <div class="hs-br">
+      <div class="hs-kk"><h3>Tagesabschluss</h3><span id="h-abschluss-hinweis">sonst automatisch in der Nacht</span></div>
+      <div id="h-abschluss"><p class="hz-leer">Wird geladen…</p></div>
+    </div>
   </section>
 </div>
 
 <!-- ══ AUFGABEN ══════════════════════════════════════════════════════ -->
 <div id="view-tasks" class="panel">
   <div class="panel-header">
-    <h2>📋 Aufgaben</h2>
+    <h2>Aufgaben</h2>
     <div class="toolbar">
       <div class="kpi-row">
         <div class="kpi"><span class="kpi-val">{len(active_tasks)}</span><span class="kpi-label">Offen</span></div>
@@ -3945,26 +4247,20 @@ tr.st-hidden{{display:none !important}}
 
 <!-- ══ UNTERNEHMEN ═══════════════════════════════════════════════════ -->
 <div id="view-contacts" class="panel">
-  <div class="panel-header">
-    <h2>🏢 Unternehmen & Leads</h2>
-    <div class="toolbar">
-      <div class="kpi-row">
-        <div class="kpi"><span class="kpi-val">{len(contacts)}</span><span class="kpi-label">Gesamt</span></div>
-        <div class="kpi"><span class="kpi-val">{leads_n}</span><span class="kpi-label">Leads</span></div>
-        <div class="kpi"><span class="kpi-val">{kunden_n}</span><span class="kpi-label">Kunden</span></div>
-        <div class="kpi"><span class="kpi-val">{netz_n}</span><span class="kpi-label">Netzwerk</span></div>
-      </div>
-      <button class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
-    </div>
+  <div class="panel-header st-kopf">
+    <div class="st-titel"><h2>Unternehmen</h2><div class="fx-pills" id="fx-pills-c-tbl"></div></div>
+    <button class="btn btn-primary" onclick="newContact()">＋ Unternehmen</button>
   </div>
-  <div class="fx-sichten" id="fx-sichten-c-tbl"></div>
-  <div class="filter-bar">
-    <input class="search-input" id="fx-q-c-tbl" type="search" autocomplete="off" placeholder="Name, Person, Ort oder Branche" oninput="fxSuche('c-tbl',this.value)">
+  <div class="fx-zeile">
+    <input class="search-input fx-suche" id="fx-q-c-tbl" type="search" autocomplete="off" placeholder="Name, Person, Ort oder Branche" oninput="fxSuche('c-tbl',this.value)">
+    <div class="fx" id="fx-c-tbl"></div>
+    <div class="fx-dd" id="fx-dd-sichten-c-tbl"><button type="button" class="fx-ddbtn" onclick="fxDd('c-tbl','#sichten',event)">Sichten <span class="nav-pfeil">▾</span></button>
+      <div class="fx-ddmenu"><div class="fx-sichten" id="fx-sichten-c-tbl"></div></div></div>
   </div>
-  <div class="fx" id="fx-c-tbl"></div>
-  <div style="overflow-y:auto;max-height:60vh;border:1px solid var(--border);border-radius:8px">
+  <div class="fx-fuss" id="fx-fuss-c-tbl"></div>
+  <div class="st-tabelle">
   <table id="c-tbl">
-    <thead><tr><th>Firma / Personen</th><th>Beziehung</th><th>Branche</th><th>Letzter Kontakt</th><th>Nächster Schritt</th></tr></thead>
+    <thead><tr><th>Firma / Personen</th><th>Beziehung</th><th class="sp-branche">Branche</th><th>Letzter Kontakt</th><th>Nächster Schritt</th></tr></thead>
     <tbody>{contact_rows}</tbody>
   </table>
   </div>
@@ -3972,32 +4268,31 @@ tr.st-hidden{{display:none !important}}
 
 <!-- ══ PERSONEN ══════════════════════════════════════════════════════ -->
 <div id="view-persons" class="panel">
-  <div class="panel-header">
-    <h2>👤 Kontakte</h2>
-    <div class="toolbar">
-      <button class="btn btn-ghost" id="dub-btn" onclick="dublettenOeffnen()" title="Doppelte Kontakte finden und zusammenführen">⧉ Dubletten <span id="dub-n"></span></button>
-      <div class="kpi-row">
-        <div class="kpi"><span class="kpi-val">{len(persons)}</span><span class="kpi-label">Gesamt</span></div>
-        <div class="kpi"><span class="kpi-val">{len(kampagnen)}</span><span class="kpi-label">Kampagnen</span></div>
-      </div>
-    </div>
+  <div class="panel-header st-kopf">
+    <div class="st-titel"><h2>Personen</h2><div class="fx-pills" id="fx-pills-per-tbl"></div></div>
+    <button class="btn btn-primary" onclick="newPersonOhneFirma()">＋ Person</button>
   </div>
-  <div class="fx-sichten" id="fx-sichten-per-tbl"></div>
-  <div class="filter-bar">
-    <input class="search-input" id="fx-q-per-tbl" type="search" autocomplete="off" placeholder="Name, Unternehmen, Mail oder Telefon" oninput="fxSuche('per-tbl',this.value)">
+  <div class="dub-hinweis" id="dub-hinweis" hidden><span id="dub-text"></span><span id="dub-n" hidden></span>
+    <button type="button" class="hz-link" id="dub-btn" onclick="dublettenOeffnen()">Prüfen und zusammenführen</button></div>
+  <div class="fx-zeile">
+    <input class="search-input fx-suche" id="fx-q-per-tbl" type="search" autocomplete="off" placeholder="Name, Unternehmen, Mail oder Telefon" oninput="fxSuche('per-tbl',this.value)">
+    <div class="fx" id="fx-per-tbl"></div>
+    <div class="fx-dd" id="fx-dd-sichten-per-tbl"><button type="button" class="fx-ddbtn" onclick="fxDd('per-tbl','#sichten',event)">Sichten <span class="nav-pfeil">▾</span></button>
+      <div class="fx-ddmenu"><div class="fx-sichten" id="fx-sichten-per-tbl"></div></div></div>
   </div>
-  <div class="fx" id="fx-per-tbl"></div>
-  <p style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">Klick auf eine Zeile öffnet die Akte der Person mit Kontaktdaten, Projekten und Journal.</p>
+  <div class="fx-fuss" id="fx-fuss-per-tbl"></div>
+  <div class="st-tabelle">
   <table id="per-tbl">
-    <thead><tr><th>Name</th><th>Unternehmen</th><th>Kampagne</th><th>Status</th><th>Letzter Kontakt / Daten</th></tr></thead>
+    <thead><tr><th>Name</th><th>Unternehmen</th><th>Status</th><th>Letzter Kontakt</th><th class="p-erreichen">Erreichen</th></tr></thead>
     <tbody>{person_rows}</tbody>
   </table>
+  </div>
 </div>
 
 <!-- ══ PROJEKT ═══════════════════════════════════════════════════════ -->
 <div id="view-pipeline" class="panel">
   <div class="panel-header">
-    <h2>📁 Projekt</h2>
+    <h2>Projekte</h2>
     <div class="toolbar">
       <div class="kpi-row">
         <div class="kpi"><span class="kpi-val">{len(project_groups)}</span><span class="kpi-label">Kunden/Bereiche</span></div>
@@ -4054,7 +4349,7 @@ tr.st-hidden{{display:none !important}}
 <!-- ══ JOURNAL (2026-10-19) ══════════════════════════════════════ -->
 <div id="view-journal" class="panel">
   <div class="panel-header">
-    <h2>📓 Journal</h2>
+    <h2>Journal</h2>
     <div class="toolbar">
       <div class="j-seg">
         <button id="j-mode-fach" class="active" onclick="journalSetModus('fach')">Fachlich</button>
@@ -4115,7 +4410,7 @@ tr.st-hidden{{display:none !important}}
 <!-- ══ WISSEN (Migration 005) ════════════════════════════════════════ -->
 <div id="view-wissen" class="panel">
   <div class="r-kopf">
-    <h2 style="margin:.2rem 0 .8rem">🔎 Recherche</h2>
+    <h2 style="margin:.2rem 0 .8rem">Recherche</h2>
     <label class="r-suche"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4338ca" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input type="search" id="r-q" placeholder="z. B. Liquiditätsplanung Muster Logistik" aria-label="Freitext oder Stichworte" oninput="rechercheFilter(300)" onkeydown="if(event.key==='Enter')rechercheFilter(0)"></label>
     <p class="r-hilfe">Freitext oder Stichworte. Mehrere Begriffe werden kombiniert, „in Anführungszeichen“ sucht die genaue Wortfolge. Durchsucht Stammdaten, Projekte, Aufgaben, Journal, Mails, Fachwissen und die Kundenordner.</p>
@@ -4134,7 +4429,7 @@ tr.st-hidden{{display:none !important}}
 
 <!-- ══ EINSTELLUNGEN (Schritt 5) ═════════════════════════════════════ -->
 <div id="view-einstellungen" class="panel">
-  <div class="panel-header"><h2>⚙️ Einstellungen</h2></div>
+  <div class="panel-header"><h2>Einstellungen</h2></div>
   <div class="set-grid">
     <section class="set-card">
       <h3>Persönlich <span class="set-who" id="set-who"></span></h3>
@@ -4226,7 +4521,7 @@ tr.st-hidden{{display:none !important}}
 <!-- ══ ARCHIV (Migration 002) ══════════════════════════════════════ -->
 <div id="view-archiv" class="panel">
   <div class="panel-header">
-    <h2>🗄 Archiv</h2>
+    <h2>Archiv</h2>
     <div class="toolbar">
       <button class="btn btn-ghost" onclick="loadArchive()">↺ Aktualisieren</button>
     </div>
@@ -4346,7 +4641,7 @@ tr.st-hidden{{display:none !important}}
 
   <!-- ── VERKNÜPFTE ITEMS ── -->
   <div class="related-section" id="c-related" style="display:none">
-    <h4>🔗 Verknüpfte Tasks & Opportunities</h4>
+    <h4>Verknüpfte Aufgaben und Projekte</h4>
     <div id="c-related-tasks" class="related-list"></div>
     <div id="c-related-opps" class="related-list" style="margin-top:.5rem"></div>
   </div>
@@ -4354,7 +4649,7 @@ tr.st-hidden{{display:none !important}}
   <!-- ── SCHNELL-IMPORT ── -->
   <div class="parse-section">
     <div class="parse-header" onclick="toggleParser()">
-      <span>⚡ Schnell-Import: Text einfügen & parsen</span>
+      <span>Schnell-Import: Text einfügen und auslesen</span>
       <span id="parse-arrow">▸</span>
     </div>
     <div id="parse-body" style="display:none">
@@ -4420,7 +4715,7 @@ tr.st-hidden{{display:none !important}}
 <!-- ══ MODAL: ANSPRECHPARTNER ═══════════════════════════════════════ -->
 <div class="modal-overlay" id="modal-person" onclick="if(event.target===this)closeModal('person')">
 <div class="modal" style="max-width:420px">
-  <h3 id="person-modal-title">👤 Ansprechpartner</h3>
+  <h3 id="person-modal-title">Ansprechpartner</h3>
   <input type="hidden" id="p-firma-id">
   <input type="hidden" id="p-index">
   <div class="form-grid">
@@ -4435,7 +4730,7 @@ tr.st-hidden{{display:none !important}}
     <div class="form-row full"><label>Kampagne</label><input id="p-kampagne" list="kampagne-list" placeholder="z.B. Weihnachtsaktion 2026"></div>
   </div>
   <div class="related-section" id="p-log-section">
-    <h4>🗒 Aktivitäten dieser Person</h4>
+    <h4>Aktivitäten dieser Person</h4>
     <div id="p-log-entries" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem"></div>
     <div style="display:flex;gap:.5rem">
       <input id="p-log-date" type="date" style="width:145px;flex-shrink:0">
@@ -4458,7 +4753,7 @@ tr.st-hidden{{display:none !important}}
 <!-- ══ MODAL: MAIL-ABSENDER ZUORDNEN (Schritt 3) ═════════════════════ -->
 <div class="modal-overlay" id="modal-journal" onclick="if(event.target===this)closeJournalModal()">
 <div class="modal" style="max-width:600px">
-  <h3>📓 Journal-Eintrag</h3>
+  <h3>Journal-Eintrag</h3>
   <input type="hidden" id="je-id">
   <div class="form-grid">
     <div class="form-row"><label>Datum</label><input type="date" id="je-datum"></div>
@@ -4492,7 +4787,7 @@ tr.st-hidden{{display:none !important}}
 
 <div class="modal-overlay" id="modal-mailassign" onclick="if(event.target===this)closeModal('mailassign')">
 <div class="modal" style="max-width:440px">
-  <h3>✉️ Absender zuordnen</h3>
+  <h3>Absender zuordnen</h3>
   <input type="hidden" id="ma-id">
   <div class="form-grid">
     <div class="form-row full"><label>Unternehmen *</label>
@@ -4561,7 +4856,7 @@ function showRelatedItems(firmaName) {{
     taskDiv.innerHTML = '<div style="font-size:.72rem;color:var(--text2);font-weight:600;margin-bottom:.25rem">AUFGABEN</div>' +
       relTasks.map(t => `<div class="related-item" onclick="closeModal('contact');editTask('${{t.taskId}}')">
         <span class="related-item-title">${{t.title}}</span>
-        <span class="badge" style="background:#6b7280;font-size:.65rem">${{t.status}}</span>
+        <span class="badge" style="color:#6b7280;border-color:#6b728033;background:#6b728014;font-size:.65rem">${{t.status}}</span>
       </div>`).join('');
   }} else {{
     taskDiv.innerHTML = '<span class="related-empty">Keine verknüpften Tasks</span>';
@@ -4574,7 +4869,7 @@ function showRelatedItems(firmaName) {{
     oppDiv.innerHTML = '<div style="font-size:.72rem;color:var(--text2);font-weight:600;margin-bottom:.25rem">OPPORTUNITIES</div>' +
       relOpps.map(o => `<div class="related-item" onclick="closeModal('contact');editOpp('${{o.id}}')">
         <span class="related-item-title">${{o.title}}</span>
-        <span class="badge" style="background:#3b82f6;font-size:.65rem">${{o.status}}</span>
+        <span class="badge" style="color:#3b82f6;border-color:#3b82f633;background:#3b82f614;font-size:.65rem">${{o.status}}</span>
       </div>`).join('');
   }} else {{
     oppDiv.innerHTML = '<span class="related-empty">Keine verknüpften Opportunities</span>';
@@ -4623,7 +4918,7 @@ function renderMailReview(items){{
   const n = g => _mrListe.filter(it=>_mrGruppe(it) === g).length;
   const offen = n('offen');
   const tab = document.querySelector('.tab[data-panel="mailreview"]');
-  if(tab) tab.textContent = '✉️ Mail-Review (' + offen + ')';
+  document.querySelectorAll('.tab[data-panel=mailreview] .nav-zahl').forEach(z=>z.textContent = offen);
   document.getElementById('mr-chips').innerHTML = [['offen','Offen'],['spaeter','Später'],['erledigt','Erledigt']].map(([k,l])=>
     `<button type="button" class="mr-chip ${{_mrFilter===k?'on':''}}" onclick="mrFilter('${{k}}')">${{l}} <span>${{n(k)}}</span></button>`).join('');
   const sicht = _mrListe.filter(it=>_mrGruppe(it) === _mrFilter);
@@ -5203,7 +5498,7 @@ function editTask(id) {{
     const t = data.find(x=>x.taskId===id);
     if(!t) return;
     _taskData = t;
-    document.getElementById('task-modal-title').textContent='✏️ Aufgabe: '+t.taskId;
+    document.getElementById('task-modal-title').textContent='Aufgabe '+t.taskId;
     document.getElementById('t-id').value = t.taskId;
     document.getElementById('t-title').value = t.title||'';
     document.getElementById('t-firma').value = t.firmaId||'';
@@ -5336,7 +5631,7 @@ function editContact(id) {{
   api('GET','/api/contacts').then(data=>{{
     const c = data.find(x=>x.id===id);
     if(!c) return;
-    document.getElementById('contact-modal-title').textContent='✏️ '+c.firma;
+    document.getElementById('contact-modal-title').textContent=c.firma;
     document.getElementById('c-id').value = c.id;
     document.getElementById('c-firma').value = c.firma||'';
     document.getElementById('c-firma').dataset.alt = c.firma||'';
@@ -5475,7 +5770,7 @@ function editOpp(id) {{
   api('GET','/api/opportunities').then(data=>{{
     const o = data.find(x=>x.id===id);
     if(!o) return;
-    document.getElementById('opp-modal-title').textContent='✏️ '+o.title;
+    document.getElementById('opp-modal-title').textContent=o.title;
     document.getElementById('o-id').value = o.id;
     document.getElementById('o-title').value = o.title||'';
     document.getElementById('o-contact').value = o.kontakt||'';
@@ -5505,7 +5800,7 @@ function editPerson(firmaId, personId) {{
     const persons = c.ansprechpartner_list || [];
     const p = persons.find(x => x.id === personId) || persons[0];
     if (!p) return;
-    document.getElementById('person-modal-title').textContent = '👤 ' + (p.name || 'Ansprechpartner');
+    document.getElementById('person-modal-title').textContent = p.name || 'Ansprechpartner';
     document.getElementById('p-firma-id').value = firmaId;
     document.getElementById('p-index').value    = personId;
     document.getElementById('p-name').value  = p.name  || '';
@@ -5666,7 +5961,7 @@ function openLogDrawer(firma, source, pipelineName){{
   _logSource = source === 'pipeline' ? 'pipeline' : 'kontakt';
   _logPipelineName = _logSource === 'pipeline' ? (pipelineName || '') : '';
   _logContext = firma + '|' + _logSource + '|' + _logPipelineName;
-  document.getElementById('log-drawer-title').textContent = '📋 Log · ' + firma
+  document.getElementById('log-drawer-title').textContent = 'Log · ' + firma
     + (_logPipelineName ? ' — Pipeline: ' + _logPipelineName : '');
   _logEntriesCache = [];
   renderLogEntries();
@@ -5760,7 +6055,7 @@ const FX_CFG = {{
   'c-tbl': {{bereich:'firmen', einheit:['Unternehmen','Unternehmen'], und:['mk'], gruppen:[
     ['art','Beziehung',FX_ART], ['st','Status',null], ['br','Branche',null], ['ort','Ort',null],
     ['kt','Letzter Kontakt',FX_KT], ['mk','Merkmale',{{acos:'In ACOS', auf:'Offene Aufgabe'}}]]}},
-  'per-tbl': {{bereich:'personen', einheit:['Kontakt','Kontakten'], und:[], gruppen:[
+  'per-tbl': {{bereich:'personen', einheit:['Person','Personen'], und:[], gruppen:[
     ['art','Beziehung',FX_ART], ['st','Status',null], ['kp','Kampagne',null], ['fi','Unternehmen',null],
     ['kt','Letzter Kontakt',FX_KT]]}}
 }};
@@ -5786,42 +6081,85 @@ function _fxPasst(id, tr, ohne){{
   }}
   return true;
 }}
+const FX_PILLS = {{
+  'c-tbl': [['alle','Alle',{{}}], ['mandant','Mandanten',{{art:'mandant'}}], ['lead','Leads',{{st:'lead'}}], ['netzwerk','Netzwerk',{{art:'netzwerk'}}], ['lieferant','Lieferanten',{{art:'lieferant'}}]],
+  'per-tbl': [['alle','Alle',{{}}], ['mandant','bei Mandanten',{{art:'mandant'}}], ['netzwerk','im Netzwerk',{{art:'netzwerk'}}], ['lieferant','bei Lieferanten',{{art:'lieferant'}}]]
+}};
+function _fxPillAktiv(id, b){{
+  const c = FX[id].chips, art = c.art || [], st = c.st || [];
+  if(b.art) return art.length === 1 && art[0] === b.art;
+  if(b.st) return !art.length && st.length === 1 && st[0] === b.st;
+  return !art.length && !(st.length === 1 && st[0] === 'lead');
+}}
+function fxPill(id, k){{
+  // S1: Kennzahlen sind Filter
+  const s = FX[id], b = (FX_PILLS[id].find(x => x[0] === k) || [])[2] || {{}};
+  s.chips.art = b.art ? [b.art] : [];
+  if(b.st) s.chips.st = [b.st]; else if((s.chips.st || []).length === 1 && s.chips.st[0] === 'lead') s.chips.st = [];
+  s.aktiv = null; fxZeichnen(id);
+}}
+function fxDd(id, k, ev){{
+  if(ev) ev.stopPropagation();
+  const s = FX[id]; s.dd = s.dd === k ? null : k; fxZeichnen(id);
+}}
+document.addEventListener('click', e => {{
+  if(e.target.closest('.fx-dd')) return;
+  Object.keys(FX).forEach(id => {{ if(FX[id].dd){{ FX[id].dd = null; fxZeichnen(id); }} }});
+}});
+function fxSort(id, art){{ FX[id].sort = art; fxZeichnen(id); }}
+function _fxSortieren(id){{
+  const s = FX[id], tb = document.querySelector('#' + id + ' tbody'); if(!tb) return;
+  const rows = Array.from(tb.querySelectorAll('tr[data-fx]'));
+  const key = s.sort === 'lk' ? (tr => tr.dataset.sortLk || '') : (tr => tr.dataset.sortName || '');
+  rows.sort((a, b) => s.sort === 'lk' ? key(b).localeCompare(key(a)) : key(a).localeCompare(key(b), 'de'));
+  rows.forEach(r => tb.appendChild(r));
+}}
 function fxZeichnen(id){{
   const s = FX[id], cfg = FX_CFG[id], box = document.getElementById('fx-' + id);
   if(!s || !box) return;
   const rows = _fxZeilen(id);
   rows.forEach(_fxDaten);
-  let h = '';
+  // Pills (Alle, Mandanten, Leads, Netzwerk) mit festen Zahlen
+  const pills = document.getElementById('fx-pills-' + id);
+  if(pills){{
+    const zahl = b => rows.filter(tr => b.art ? (tr._fx.art || []).includes(b.art) : b.st ? (tr._fx.st || []).includes(b.st) : true).length;
+    pills.innerHTML = FX_PILLS[id].filter(([k, , b]) => k === 'alle' || zahl(b)).map(([k, l, b]) =>
+      `<button type="button" class="fx-pill${{_fxPillAktiv(id, b) ? ' on' : ''}}" aria-pressed="${{_fxPillAktiv(id, b)}}" onclick="fxPill('${{id}}','${{k}}')"><b>${{zahl(b)}}</b> ${{l}}</button>`).join('');
+  }}
+  let h = '', aktivChips = '';
   for(const [k, titel, feste] of cfg.gruppen){{
+    if(k === 'art') continue;   // Beziehung steckt in den Pills
     const zahl = {{}};
     rows.forEach(tr => {{ if(_fxPasst(id, tr, cfg.und.includes(k) ? null : k)) (tr._fx[k] || []).forEach(x => zahl[x] = (zahl[x] || 0) + 1); }});
-    const gew = s.chips[k] || [];
+    const gew = (s.chips[k] || []).filter(x => !(k === 'st' && x === 'lead' && FX_PILLS[id].some(p => p[2].st === 'lead') && _fxPillAktiv(id, {{st:'lead'}})));
     let werte = feste ? Object.keys(feste).filter(x => rows.some(tr => (tr._fx[k] || []).includes(x)))
                       : Array.from(new Set(rows.flatMap(tr => tr._fx[k] || [])));
     if(!feste) werte = werte.filter(x => zahl[x] || gew.includes(x))
                             .sort((a, b) => (zahl[b] || 0) - (zahl[a] || 0) || a.localeCompare(b, 'de'));
     if(!werte.length) continue;
-    const viele = werte.length > FX_MAX + 2;
-    const sicht = (!viele || s.offen[k]) ? werte : werte.filter((x, i) => i < FX_MAX || gew.includes(x));
-    h += `<div class="fx-grp"><span class="fx-lb">${{titel}}</span><div class="fx-chips">`
-      + sicht.map(x => {{
-          const n = zahl[x] || 0, on = gew.includes(x);
-          const txt = feste ? feste[x] : (k === 'st' ? (FX_ST[x] || x) : x);
-          return `<button type="button" class="fx-chip${{on ? ' on' : ''}}${{!n && !on ? ' leer' : ''}}" data-fx-k="${{k}}" data-fx-x="${{_fxE(x)}}" aria-pressed="${{on}}" onclick="fxChip('${{id}}',this)">${{_fxE(txt)}} <span>${{n}}</span></button>`;
-        }}).join('')
-      + (viele && !s.offen[k] ? `<button type="button" class="fx-lnk" onclick="FX['${{id}}'].offen['${{k}}']=true;fxZeichnen('${{id}}')">+ ${{werte.length - sicht.length}} weitere</button>` : '')
-      + (viele && s.offen[k] ? `<button type="button" class="fx-lnk" onclick="FX['${{id}}'].offen['${{k}}']=false;fxZeichnen('${{id}}')">weniger</button>` : '')
-      + '</div></div>';
+    const txt = x => feste ? feste[x] : (k === 'st' ? (FX_ST[x] || x) : x);
+    gew.forEach(x => {{ aktivChips += `<button type="button" class="fx-aktiv" data-fx-k="${{k}}" data-fx-x="${{_fxE(x)}}" onclick="fxChip('${{id}}',this)" title="Filter entfernen">${{_fxE(titel)}}: ${{_fxE(txt(x))}} <span aria-hidden="true">×</span></button>`; }});
+    if(gew.length) continue;   // aktive Gruppe steht als Chip in der Zeile
+    h += `<div class="fx-dd${{s.dd === k ? ' open' : ''}}"><button type="button" class="fx-ddbtn" onclick="fxDd('${{id}}','${{k}}',event)" aria-expanded="${{s.dd === k}}">${{_fxE(titel)}} <span class="nav-pfeil">▾</span></button>`
+      + `<div class="fx-ddmenu"><div class="fx-chips">` + werte.map(x => {{
+          const n = zahl[x] || 0;
+          return `<button type="button" class="fx-chip${{!n ? ' leer' : ''}}" data-fx-k="${{k}}" data-fx-x="${{_fxE(x)}}" aria-pressed="false" onclick="fxChip('${{id}}',this)">${{_fxE(txt(x))}} <span>${{n}}</span></button>`;
+        }}).join('') + '</div></div></div>';
   }}
-  const da = new Set(rows.filter(tr => _fxPasst(id, tr, '#az')).map(tr => tr._fx.az));
-  h += '<div class="fx-az" aria-label="Nach Anfangsbuchstabe">' + '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c =>
-    `<button type="button" class="${{s.az === c ? 'on' : ''}}" ${{da.has(c) || s.az === c ? '' : 'disabled'}} onclick="fxAz('${{id}}','${{c}}')">${{c}}</button>`).join('') + '</div>';
+  box.innerHTML = aktivChips + h;
+  const sd = document.getElementById('fx-dd-sichten-' + id); if(sd) sd.classList.toggle('open', s.dd === '#sichten');
   let n = 0;
   rows.forEach(tr => {{ const p = _fxPasst(id, tr); tr.classList.toggle('fx-aus', !p); if(p) n++; }});
+  _fxSortieren(id);
+  const da = new Set(rows.filter(tr => _fxPasst(id, tr, '#az')).map(tr => tr._fx.az));
   const aktiv = s.q || s.az || Object.values(s.chips).some(v => v.length);
-  h += `<div class="fx-fuss"><span>${{n}} von ${{rows.length}} ${{rows.length === 1 ? cfg.einheit[0] : cfg.einheit[1]}}</span>`
-     + (aktiv ? `<button type="button" class="fx-lnk" onclick="fxLeeren('${{id}}')">Alle Filter lösen</button>` : '') + '</div>';
-  box.innerHTML = h;
+  const fuss = document.getElementById('fx-fuss-' + id);
+  if(fuss) fuss.innerHTML = `<span>${{n === rows.length ? n : n + ' von ' + rows.length}} ${{rows.length === 1 ? cfg.einheit[0] : cfg.einheit[1]}}`
+     + (aktiv ? ` · <button type="button" class="fx-lnk" onclick="fxLeeren('${{id}}')">Alle Filter lösen</button>` : '') + '</span>'
+     + '<span class="fx-az" aria-label="Nach Anfangsbuchstabe">' + '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c =>
+       `<button type="button" class="${{s.az === c ? 'on' : ''}}" ${{da.has(c) || s.az === c ? '' : 'disabled'}} onclick="fxAz('${{id}}','${{c}}')">${{c}}</button>`).join('') + '</span>'
+     + `<span class="fx-sort">Sortiert nach ${{s.sort === 'lk' ? `<button type="button" class="fx-lnk" onclick="fxSort('${{id}}','name')">${{id === 'per-tbl' ? 'Nachname' : 'Name'}}</button> · <b>Letzter Kontakt</b>`
+         : `<b>${{id === 'per-tbl' ? 'Nachname' : 'Name'}}</b> · <button type="button" class="fx-lnk" onclick="fxSort('${{id}}','lk')">Letzter Kontakt</button>`}}</span>`;
   fxSichtenZeichnen(id);
 }}
 function fxChip(id, el){{
@@ -5847,7 +6185,7 @@ function fxLeeren(id){{
 function fxSichtenZeichnen(id){{
   const s = FX[id], box = document.getElementById('fx-sichten-' + id);
   if(!box) return;
-  box.innerHTML = '<span class="fx-lb">Sichten</span>' + s.sichten.map(v =>
+  box.innerHTML = (s.sichten.length ? '' : '<p class="fx-hinweis">Noch keine gespeicherten Sichten.</p>') + s.sichten.map(v =>
       `<span class="fx-sicht${{s.aktiv === v.id ? ' on' : ''}}"><button type="button" onclick="fxSichtAn('${{id}}',${{v.id}})" title="${{_fxE(v.von ? 'Angelegt von ' + v.von : '')}}">${{_fxE(v.name)}}</button>`
     + `<button type="button" class="fx-x" aria-label="Sicht ${{_fxE(v.name)}} löschen" title="Sicht löschen" onclick="fxSichtWeg('${{id}}',${{v.id}})">×</button></span>`).join('')
     + `<button type="button" class="fx-chip fx-neu" onclick="fxSichtNeu('${{id}}')">+ Sicht speichern</button>`;
@@ -5897,7 +6235,7 @@ function fxSichtWeg(id, sid){{
 }}
 Object.keys(FX_CFG).forEach(id => {{
   if(!document.getElementById('fx-' + id)) return;
-  FX[id] = {{chips: {{}}, q: '', az: null, offen: {{}}, sichten: [], aktiv: null}};
+  FX[id] = {{chips: {{}}, q: '', az: null, offen: {{}}, sichten: [], aktiv: null, dd: null, sort: 'name'}};
   fxZeichnen(id);
   fxSichtenLaden(id);
 }});
@@ -5908,7 +6246,7 @@ Object.keys(FX_CFG).forEach(id => {{
 <aside id="akte" class="akte" aria-label="Akte" aria-hidden="true"><div id="akte-inhalt"></div></aside>
 <div id="log-drawer">
   <div id="log-drawer-header">
-    <span id="log-drawer-title">📋 Aktivitäten-Log</span>
+    <span id="log-drawer-title">Aktivitäten-Log</span>
     <button id="log-drawer-close" onclick="closeLogDrawer()" title="Schließen">✕</button>
   </div>
   <div id="log-entries"></div>
@@ -6282,14 +6620,37 @@ def build_mobile():
     def tkurz(t):
         return {"id": t["taskId"], "title": t["title"], "firma": t.get("contact", ""), "projekt": t.get("projekt", ""),
                 "deadline": t.get("deadline") or "", "tage": days_until(t.get("deadline")),
-                "prio": t.get("priority", ""), "status": t.get("status", "")}
+                "prio": t.get("priority", ""), "status": t.get("status", ""), "acos": bool(t.get("acos"))}
     offen_k = sorted((tkurz(t) for t in offen), key=lambda x: (x["deadline"] or "9999-99-99", x["title"]))
     try:
         aktiv = _letzte_aktivitaeten_je_firma()
     except Exception:
         aktiv = {}
+    # H8: naechster Termin und Mail-Review fuer die Handy-Startseite
+    try:
+        from zoneinfo import ZoneInfo
+        _tag = heute_lokal()
+        _termine, _ = _heute_termine(_tag, datetime.now(ZoneInfo("Europe/Berlin")))
+        naechster = next((t for t in _termine if not t.get("vorbei") and not t.get("ganztag")), None)
+    except Exception:
+        naechster = None
+    try:
+        _mails = _heute_mails()
+        mails = {"offen": mail_review_offen_anzahl(), "eindeutig": sum(1 for m in _mails if m["einfach"])}
+    except Exception:
+        mails = {"offen": 0, "eindeutig": 0}
+    personen_m = []
+    for c in contacts:
+        for p in c.get("ansprechpartner_list", []):
+            personen_m.append({"name": p.get("name", ""), "titel": p.get("titel", ""), "firma": c["firma"], "fid": str(c["id"]),
+                               "tel": p.get("mobil") or p.get("phone") or "", "email": p.get("email", ""),
+                               "linkedin": p.get("linkedin", "")})
+    personen_m.sort(key=lambda x: ((x["name"].split() or [""])[-1].lower(), x["name"].lower()))
     data = {
-        "user": user or "", "stand": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "user": user or "", "stand": datetime.now().strftime("%d.%m.%Y %H:%M"), "zeit": datetime.now().strftime("%H:%M"),
+        "datum_lang": f"{WOCHENTAGE[date.today().weekday()]}, {date.today().day}. " + ("Januar Februar März April Mai Juni Juli August September Oktober November Dezember".split()[date.today().month - 1]),
+        "gruss": "Guten Morgen" if datetime.now().hour < 11 else "Guten Tag" if datetime.now().hour < 18 else "Guten Abend",
+        "naechster": naechster, "mails": mails, "personen": personen_m,
         "projekt_status": us.get("projekt_status") or BENUTZER_DEFAULTS["projekt_status"],
         "aufgaben": offen_k,
         "kandidaten": build_heute_candidates(contacts, tasks),
@@ -6297,6 +6658,8 @@ def build_mobile():
                       "deadline": o["deadline"], "value": o["value"], "person": o["ansprechpartner"]} for o in opps],
         "kontakte": [{"id": c["id"], "firma": c["firma"], "status": c["status"], "zentrale": c.get("phone_central", ""),
                       "adresse": c.get("address", ""), "letzter": c.get("last_contact", ""), "next": c.get("next_action", ""),
+                      "stufe": _fx_kontakt_stufe(c.get("last_contact")), "acos": bool(c.get("acos_fuehren")),
+                      "tage": (date.today() - date.fromisoformat(c["last_contact"][:10])).days if c.get("last_contact") else None,
                       "personen": [{"name": p.get("name", ""), "titel": p.get("titel", ""), "email": p.get("email", ""),
                                     "email2": p.get("email2", ""), "tel": p.get("phone", ""), "mobil": p.get("mobil", ""),
                                     "linkedin": p.get("linkedin", "")} for p in c.get("ansprechpartner_list", [])],
@@ -6363,6 +6726,36 @@ nav button{background:none;border:0;padding:8px 0 7px;font-size:11px;color:var(-
 nav button .i{font-size:21px;line-height:1}
 nav button.on{color:var(--accent);font-weight:600}
 .n{font-size:11px;background:var(--red);color:#fff;border-radius:999px;padding:0 6px;margin-left:4px}
+.gruss{padding:2px 4px 10px}.gruss small{display:block;font-size:13px;color:var(--text2)}.gruss b{font-size:20px}
+.kpi{display:block;font:inherit;color:inherit;cursor:pointer;text-decoration:none}
+.kpi.rot{background:#fef2f2;border-color:#fca5a5}
+.naechst{display:grid;grid-template-columns:56px 1fr;gap:10px}
+.naechst .z{font-weight:700}.naechst .z small{display:block;font-weight:400;font-size:12px;color:var(--text2)}
+.vorb{font-size:13px;color:#92400e;background:#fffbeb;border-radius:8px;padding:6px 8px;margin-top:6px}
+.task{display:flex;align-items:center;gap:6px;padding:4px 8px 4px 2px}
+.cb{flex:0 0 44px;height:44px;display:flex;align-items:center;justify-content:center}
+.cb input{width:24px;height:24px;margin:0;accent-color:var(--accent)}
+.task .tt{flex:1;min-width:0}
+.task.erl .t{text-decoration:line-through;color:var(--text2)}
+.mailk{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.knopf{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 16px;border-radius:12px;border:0;background:#eef2ff;color:var(--accent2);font:inherit;font-weight:600;font-size:15px;text-decoration:none}
+.ikon{flex:0 0 44px;width:44px;height:44px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+.ikon.prim{background:#eef2ff;border-color:#eef2ff;color:var(--accent2)}
+.ikon.leer{opacity:.35;pointer-events:none}
+.seg{display:grid;grid-template-columns:1fr 1fr;background:#eef0f4;border-radius:12px;padding:3px;margin-bottom:10px}
+.seg button{border:0;background:none;padding:8px;border-radius:10px;font:inherit;font-size:15px;color:var(--text2)}
+.seg button.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(15,23,42,.1)}
+.stufe{display:inline-block;width:7px;height:7px;border-radius:50%;background:#16a34a;margin-right:6px;vertical-align:middle}
+.stufe.m{background:#d97706}.stufe.r{background:#dc2626}.stufe.nie{background:#cbd5e1}
+.nxt{background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:8px 10px;font-size:14px;color:#92400e;margin-bottom:10px}
+.nxt b{color:#78350f}
+.fest{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:6px}
+.fest a,.fest button{min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;border-radius:10px;background:#eef2ff;color:var(--accent2);font:inherit;font-size:13px;font-weight:600;text-decoration:none}
+.fest .aus{opacity:.35;pointer-events:none}
+.pers{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)}
+.pers .av{flex:0 0 34px;height:34px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.pers .pn{flex:1;min-width:0}
+.notiz textarea{width:100%;font:inherit;font-size:16px;border:1px solid var(--border);border-radius:10px;padding:8px;min-height:80px;margin-top:6px}
 </style></head>
 <body>
 <header><h1>CRM</h1><div class="meta" id="meta"></div></header>
@@ -6380,6 +6773,20 @@ nav button.on{color:var(--accent);font-weight:600}
 </nav>
 <script>
 const D = __DATA__;
+const I = {
+  tel: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>',
+  mail: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
+  plus: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  ort: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>',
+  in: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.9 8.6H3.8V20h3.1zM5.3 3.5a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6zM20.2 13.5c0-3.1-1.7-4.6-3.9-4.6a3.4 3.4 0 0 0-3.1 1.7V8.6h-3V20h3.1v-5.7c0-1.5.3-2.9 2.1-2.9s1.8 1.7 1.8 3V20h3.1z"/></svg>'
+};
+async function api(method, path, body){
+  const r = await fetch(path, { method, headers: {'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  if(r.status === 401){ location.href = '/login'; return new Promise(()=>{}); }
+  return r.ok ? r.json() : Promise.reject(await r.text());
+}
+function initialen(n){ return String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase(); }
+function wannText(t){ if(t==null) return 'nie'; if(t<=0) return 'heute'; if(t===1) return 'gestern'; if(t<60) return 'vor '+t+' Tagen'; return 'vor '+Math.round(t/30)+' Monaten'; }
 const ST = { anbahnung:'Anbahnung', angebot:'Angebot raus', laeuft:'Läuft', abgeschlossen:'Abgeschlossen', verloren:'Verloren' };
 const STF = { anbahnung:'b-gelb', angebot:'', laeuft:'b-gruen', abgeschlossen:'b-grau', verloren:'b-grau' };
 const e = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -6396,21 +6803,40 @@ function taskCard(t){
   return `<div class="card"><div class="row"><div class="t">${e(t.title)}</div>${faellig(t)}</div>
     <div class="s">${e(t.firma)}${t.projekt&&t.projekt!==t.firma?' · '+e(t.projekt):''}${t.prio?' · '+e(t.prio):''}</div></div>`;
 }
-document.getElementById('meta').innerHTML = `${e(D.user)} · Stand ${e(D.stand)}<br><a href="/m">aktualisieren</a> · <a href="/?desktop=1">Vollansicht</a>`;
+document.getElementById('meta').innerHTML = `${e(D.zeit)} · <a href="/m" aria-label="Aktualisieren">↻</a><br><a href="/?desktop=1">Vollansicht</a>`;
 
-// Heute
-(function(){
+// Heute (H8, 20.11.2026): Werkzeug statt Liste
+function taskZeile(t){
+  return `<div class="card task" id="mt-${e(t.id)}"><label class="cb">${t.acos ? '' : `<input type="checkbox" aria-label="Erledigt: ${e(t.title)}" onchange="abhaken('${e(t.id)}', this)">`}</label>
+    <div class="tt"><div class="t">${e(t.title)}</div><div class="s">${e(t.firma)||'eigene Aufgabe'}${t.acos?' · läuft in ACOS':''}</div></div>${faellig(t)}</div>`;
+}
+function abhaken(id, cb){
+  cb.disabled = true;
+  api('PUT', '/api/tasks/' + encodeURIComponent(id), { status: 'Erledigt' })
+    .then(()=>{ const k = document.getElementById('mt-'+id); if(k) k.classList.add('erl');
+                const t = D.aufgaben.find(x=>x.id===id); if(t) t.status = 'Erledigt';
+                setTimeout(()=>{ D.aufgaben = D.aufgaben.filter(x=>x.id!==id); renderHeute(); renderAufgaben(''); }, 700); })
+    .catch(()=>{ cb.checked = false; cb.disabled = false; alert('Konnte nicht gespeichert werden.'); });
+}
+function renderHeute(){
   const ueber = D.aufgaben.filter(t=>t.tage!=null && t.tage<0);
   const heute = D.aufgaben.filter(t=>t.tage===0);
   const woche = D.aufgaben.filter(t=>t.tage!=null && t.tage>0 && t.tage<=7);
-  let h = `<div class="kpis"><div class="kpi ${ueber.length?'rot':''}"><b>${ueber.length}</b><span>überfällig</span></div>
-    <div class="kpi"><b>${heute.length}</b><span>heute</span></div><div class="kpi"><b>${woche.length}</b><span>nächste 7 Tage</span></div></div>`;
-  if(ueber.length) h += '<h2>Überfällig</h2>' + ueber.map(taskCard).join('');
-  h += '<h2>Heute fällig</h2>' + (heute.length ? heute.map(taskCard).join('') : '<div class="leer">Nichts für heute.</div>');
-  if(D.kandidaten.length) h += '<h2>Nächste Schritte aus den Akten</h2>' + D.kandidaten.map(k=>`<div class="card"><div class="t">${e(k.text)}</div><div class="s">${e(k.firma)}</div></div>`).join('');
+  let h = `<div class="gruss"><small>${e(D.datum_lang)}</small><b>${e(D.gruss)}, Ronald</b></div>
+    <div class="kpis"><a class="kpi ${ueber.length?'rot':''}" href="#m-erledigen"><b>${ueber.length}</b><span>überfällig</span></a>
+    <a class="kpi" href="#m-erledigen"><b>${heute.length}</b><span>heute</span></a>
+    <a class="kpi" href="/?desktop=1" onclick="try{sessionStorage.setItem('crm_desktop','1');sessionStorage.setItem('crm_active_panel','mailreview')}catch(x){}"><b>${D.mails.offen}</b><span>Mails offen</span></a></div>`;
+  const n = D.naechster;
+  if(n) h += `<h2>Als Nächstes</h2><div class="card naechst"><div class="z">${e(n.zeit)}${n.bis?`<small>${e(n.bis)}</small>`:''}</div>
+    <div><div class="t">${e(n.titel)}</div><div class="s">${[n.firma, n.ort].filter(Boolean).map(e).join(' · ')}</div>${n.vorbereitung?`<div class="vorb">${e(n.vorbereitung)}</div>`:''}</div></div>`;
+  h += '<h2 id="m-erledigen">Zu erledigen</h2>' + (ueber.length + heute.length ? ueber.concat(heute).map(taskZeile).join('') : '<div class="leer">Nichts für heute.</div>');
+  if(D.mails.offen) h += `<div class="card mailk"><div><div class="t">${D.mails.offen} ${D.mails.offen===1?'Mail wartet':'Mails warten'}</div>
+      ${D.mails.eindeutig?`<div class="s">${D.mails.eindeutig} ${D.mails.eindeutig===1?'lässt':'lassen'} sich direkt übernehmen</div>`:''}</div>
+      <a class="knopf" href="/?desktop=1" onclick="try{sessionStorage.setItem('crm_desktop','1');sessionStorage.setItem('crm_active_panel','mailreview')}catch(x){}">Prüfen</a></div>`;
   if(woche.length) h += '<h2>Nächste 7 Tage</h2>' + woche.map(taskCard).join('');
   document.getElementById('v-heute').innerHTML = h;
-})();
+}
+renderHeute();
 
 // Aufgaben
 function renderAufgaben(q){
@@ -6443,30 +6869,59 @@ function renderProjekte(){
 function togP(s){ PSEL.has(s) ? PSEL.delete(s) : PSEL.add(s); renderProjekte(); }
 renderProjekte();
 
-// Kontakte
+// Kontakte (S8, 20.11.2026): Unternehmen und Personen, Anruf mit einem Tipp
+let KMODUS = 'firmen';
+function telKnopf(nr, prim){ return nr ? `<a class="ikon ${prim?'prim':''}" href="tel:${tel(nr)}" aria-label="Anrufen">${I.tel}</a>` : ''; }
 function kontaktCard(c){
-  const pers = c.personen.map(p=>`<div class="person"><div class="t">${e(p.name)}</div>${p.titel?`<div class="s">${e(p.titel)}</div>`:''}
-    <div class="acts">${p.mobil?`<a class="act" href="tel:${tel(p.mobil)}">📱 Mobil</a>`:''}${p.tel?`<a class="act" href="tel:${tel(p.tel)}">📞 Telefon</a>`:''}
-    ${p.email?`<a class="act" href="mailto:${e(p.email)}">✉️ Mail</a>`:''}${p.email2?`<a class="act" href="mailto:${e(p.email2)}">✉️ Mail 2</a>`:''}
-    ${p.linkedin?`<a class="act" href="${e(p.linkedin)}" target="_blank" rel="noopener">in</a>`:''}</div></div>`).join('');
+  const erste = c.personen.find(p=>p.mobil||p.tel) || {};
+  const ruf = c.zentrale || erste.mobil || erste.tel || '';
+  const pers = c.personen.map(p=>`<div class="pers"><span class="av">${e(initialen(p.name))}</span>
+    <div class="pn"><div class="t">${e(p.name)}</div>${p.titel?`<div class="s">${e(p.titel)}</div>`:''}</div>
+    ${telKnopf(p.mobil||p.tel)}${p.email?`<a class="ikon" href="mailto:${e(p.email)}" aria-label="Mail">${I.mail}</a>`:''}</div>`).join('');
   const verlauf = c.aktivitaeten.length ? '<div class="verlauf">' + c.aktivitaeten.map(a=>`<div><b>${dt(a.datum)} · ${e(a.art)}</b><br>${e(a.text)}</div>`).join('') + '</div>' : '';
-  return `<div class="card" onclick="if(!event.target.closest('a'))this.classList.toggle('open')">
-    <div class="k-head"><div><div class="t">${e(c.firma)}</div><div class="s">${c.personen.map(p=>e(p.name)).join(', ')||'–'}</div></div>
-    <span class="badge ${c.status==='kunde'?'b-gruen':'b-grau'}">${e(c.status)}</span></div>
+  return `<div class="card" id="mk-${e(c.id)}" onclick="if(!event.target.closest('a,button,textarea'))this.classList.toggle('open')">
+    <div class="k-head"><div style="min-width:0"><div class="t">${e(c.firma)}</div>
+      <div class="s"><span class="stufe ${e(c.stufe)}"></span>${wannText(c.tage)} · ${e((c.status||'').charAt(0).toUpperCase()+(c.status||'').slice(1))}${c.acos?' · In ACOS':''}</div></div>
+      ${telKnopf(ruf, true)}</div>
     <div class="k-body">
-      <div class="acts">${c.zentrale?`<a class="act" href="tel:${tel(c.zentrale)}">☎️ Zentrale</a>`:''}
-      ${c.adresse?`<a class="act" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.adresse)}" target="_blank" rel="noopener">📍 Karte</a>`:''}</div>
-      ${c.next?`<div class="s" style="margin-top:8px">➜ ${e(c.next)}</div>`:''}
-      ${c.letzter?`<div class="s">Letzter Kontakt: ${dt(c.letzter)}</div>`:''}
+      ${c.next?`<div class="nxt"><b>Nächster Schritt:</b> ${e(c.next)}</div>`:''}
+      <div class="fest"><a class="${c.zentrale?'':'aus'}" href="${c.zentrale?'tel:'+tel(c.zentrale):'#'}">${I.tel}Zentrale</a>
+        <button type="button" onclick="notizAuf('${e(c.id)}')">${I.plus}Notiz</button>
+        <a class="${c.adresse?'':'aus'}" href="${c.adresse?'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(c.adresse):'#'}" target="_blank" rel="noopener">${I.ort}Karte</a></div>
+      <div class="notiz" id="mn-${e(c.id)}" style="display:none"><textarea placeholder="Was wurde besprochen?"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px"><button type="button" class="knopf" style="background:none" onclick="notizAuf('${e(c.id)}')">Abbrechen</button>
+        <button type="button" class="knopf" onclick="notizSenden('${e(c.id)}', this)">Ins Journal</button></div></div>
       ${pers}${verlauf}
     </div></div>`;
 }
+function notizAuf(id){ const n = document.getElementById('mn-'+id); if(n){ n.style.display = n.style.display==='none' ? '' : 'none'; const t = n.querySelector('textarea'); if(t && n.style.display==='') t.focus(); } }
+function notizSenden(id, btn){
+  const c = D.kontakte.find(x=>String(x.id)===String(id)); const n = document.getElementById('mn-'+id);
+  const text = (n.querySelector('textarea').value||'').trim(); if(!text || !c) return;
+  btn.disabled = true;
+  api('POST', '/api/journal', { firma: c.firma, art: 'notiz', text }).then(()=>{ n.innerHTML = '<div class="s" style="color:var(--green)">✓ Im Journal gespeichert</div>'; })
+    .catch(()=>{ btn.disabled = false; alert('Konnte nicht gespeichert werden.'); });
+}
+function personCard(p){
+  return `<div class="card"><div class="pers" style="border:0;padding:0"><span class="av">${e(initialen(p.name))}</span>
+    <div class="pn"><div class="t">${e(p.name)}</div><div class="s">${[p.titel, p.firma].filter(Boolean).map(e).join(' · ')}</div></div>
+    ${telKnopf(p.tel, true)}${p.email?`<a class="ikon" href="mailto:${e(p.email)}" aria-label="Mail">${I.mail}</a>`:''}</div></div>`;
+}
 function renderKontakte(q){
   q = (q||'').toLowerCase().trim();
-  const list = D.kontakte.filter(c=>!q || (c.firma+' '+c.personen.map(p=>p.name+' '+p.email).join(' ')).toLowerCase().includes(q));
-  document.getElementById('k-list').innerHTML = list.length ? list.map(kontaktCard).join('') : '<div class="leer">Nichts gefunden.</div>';
+  let html;
+  if(KMODUS === 'personen'){
+    const list = D.personen.filter(p=>!q || (p.name+' '+p.firma+' '+p.email+' '+p.titel).toLowerCase().includes(q));
+    html = list.length ? list.map(personCard).join('') : '<div class="leer">Nichts gefunden.</div>';
+  } else {
+    const list = D.kontakte.filter(c=>!q || (c.firma+' '+c.personen.map(p=>p.name+' '+p.email).join(' ')).toLowerCase().includes(q));
+    html = list.length ? list.map(kontaktCard).join('') : '<div class="leer">Nichts gefunden.</div>';
+  }
+  document.getElementById('k-list').innerHTML = html;
 }
-document.getElementById('v-kontakte').innerHTML = `<input class="search" type="search" placeholder="Firma, Person oder Mail suchen" oninput="renderKontakte(this.value)"><div id="k-list"></div>`;
+function kModus(m){ KMODUS = m; document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('on', b.dataset.m===m)); renderKontakte(document.getElementById('k-q').value); }
+document.getElementById('v-kontakte').innerHTML = `<div class="seg"><button type="button" data-m="firmen" class="on" onclick="kModus('firmen')">Unternehmen</button><button type="button" data-m="personen" onclick="kModus('personen')">Personen</button></div>
+  <input class="search" id="k-q" type="search" placeholder="Firma, Person oder Mail suchen" oninput="renderKontakte(this.value)"><div id="k-list"></div>`;
 renderKontakte('');
 
 // Navigation
@@ -8149,9 +8604,9 @@ AKZENTFARBEN = {
     "grafit": ("Grafit", "#475569", "#334155"),
 }
 MENUE_PUNKTE = {
-    "heute": "☀️ Heute", "tasks": "📋 Aufgaben", "pipeline": "📁 Projekte", "mailreview": "✉️ Mail-Review",
-    "contacts": "🏢 Unternehmen", "persons": "👤 Kontakte", "journal": "📓 Journal", "wissen": "🔎 Recherche",
-    "archiv": "🗄 Archiv", "einstellungen": "⚙️ Einstellungen",
+    "heute": "Heute", "tasks": "Aufgaben", "pipeline": "Projekte", "mailreview": "Mail-Review",
+    "contacts": "Unternehmen", "persons": "Personen", "journal": "Journal", "wissen": "Recherche",
+    "archiv": "Archiv", "einstellungen": "Einstellungen",
 }
 MAX_FAVORITEN = 6
 BENUTZER_DEFAULTS = {"startansicht": "heute", "projekt_status": ["anbahnung", "angebot", "laeuft"], "akzent": "indigo",
@@ -8244,6 +8699,14 @@ def load_system_settings():
         "tagesabschluss_firma": (inhaber_firma() or {}).get("name") or (load_config().get("inhaber_firma") or ""),
         "tagesabschluss_bereit": bool(inhaber_firma(nur_verknuepft=True)),
     }
+
+def darf_server_steuern(username):
+    """Restart/Stop (A1, 20.11.2026): nur Admins. Wie bei den Systemeinstellungen
+    gilt jeder angemeldete Benutzer als Admin, solange niemand die Rolle admin hat."""
+    try:
+        return bool(username) and may_change_system(username)
+    except Exception:
+        return False
 
 def may_change_system(username):
     """Solange niemand die Rolle admin hat, darf jeder angemeldete Benutzer die
@@ -9312,7 +9775,19 @@ def tag_daten(tag=None):
     tag = tag or heute_lokal()
     erledigt = _q(TASK_SELECT + " WHERE t.completed_at IS NOT NULL"
                   " AND (t.completed_at AT TIME ZONE 'Europe/Berlin')::date = %s ORDER BY t.completed_at", (tag,))
-    return {"datum": tag.isoformat(), "journal": _ta_journal(tag), "erledigt": [_ta_task(r) for r in erledigt]}
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/Berlin")
+    erl = []
+    for r in erledigt:
+        e = _ta_task(r)
+        e["zeit"] = r["completed_at"].astimezone(tz).strftime("%H:%M") if r.get("completed_at") else ""
+        erl.append(e)
+    journal = _ta_journal(tag)
+    zeiten = {r["id"]: r["created_at"] for r in _q("SELECT id, created_at FROM aktivitaeten WHERE datum=%s", (tag,))}
+    for j in journal:
+        z = zeiten.get(j["id"])
+        j["zeit"] = z.astimezone(tz).strftime("%H:%M") if z else ""
+    return {"datum": tag.isoformat(), "journal": journal, "erledigt": erl}
 
 def _ta_hinweise_tag(tag, journal, erledigt, offen_heute, ueberfaellig):
     h = []
@@ -9634,8 +10109,22 @@ def _heute_aufgaben(tag):
         out[gruppe].append({"taskId": r["task_id"], "titel": r["title"] or "", "firma": r["firma_name"] or "",
                             "firmaId": str(r["firma_id_eff"]) if r.get("firma_id_eff") else "",
                             "projekt": r["projekt_name"] or "", "faellig": _faellig_text(dl, tag),
+                            "deadline": dl.isoformat(), "tage": (tag - dl).days,
                             "acos": _acos_etikett(r.get("acos_status"))})
     return out
+
+def _zeit_relativ(ts, tag):
+    """Mail-Zeit fuer Heute (H6): "heute 08:12", "gestern 17:40", sonst "Mo 16.11."."""
+    if not ts:
+        return ""
+    from zoneinfo import ZoneInfo
+    t = ts.astimezone(ZoneInfo("Europe/Berlin")) if hasattr(ts, "astimezone") else ts
+    d = t.date() if hasattr(t, "date") else t
+    if d == tag:
+        return "heute " + t.strftime("%H:%M")
+    if d == tag - timedelta(days=1):
+        return "gestern " + t.strftime("%H:%M")
+    return f"{WT_KURZ[d.weekday()]} {_dm(d)}"
 
 def _vorbereitung(firma_id):
     if not firma_id:
@@ -9702,8 +10191,20 @@ def _heute_mails():
                     ("Als Lead anlegen" if r.get("lead") else "Newsletter, nicht ins CRM" if r["newsletter"] else "Absender unbekannt")
         if m.get("firma") and ts.get("title") and ts.get("vorhaken", True):
             vorschlag += f", Aufgabe „{ts['title']}“"
+        # H6: Vorschlag als Etiketten wie in der Mail-Review-Ansicht
+        if m.get("firma"):
+            etiketten = [{"t": m["firma"], "a": "firma"}, {"t": "Journal", "a": "grau"}]
+            if ts.get("title") and ts.get("vorhaken", True):
+                etiketten.append({"t": "Aufgabe: " + ts["title"], "a": "gelb"})
+        elif r.get("lead"):
+            etiketten = [{"t": "Als Lead anlegen", "a": "gelb"}]
+        elif r["newsletter"]:
+            etiketten = [{"t": "Newsletter", "a": "grau"}]
+        else:
+            etiketten = [{"t": "Absender unbekannt", "a": "gelb"}]
         out.append({"id": r["id"], "von": ("An " + (m.get("person") or r["an"] or "")) if r["richtung"] == "aus" else (r["von_name"] or r["von"] or ""),
                     "betreff": r["betreff"] or "", "datum": _d(r["datum"]), "firma": m.get("firma") or "",
+                    "zeit": _zeit_relativ(r["received_at"], heute_lokal()), "etiketten": etiketten,
                     "vorschlag": vorschlag, "einfach": einfach,
                     "aufgabe": ({"title": ts["title"], "deadline": ts.get("deadline") or ""} if einfach and ts.get("title") and ts.get("vorhaken", True) else None)})
     return out
@@ -9750,6 +10251,8 @@ def heute_start_view():
             "erledigt_heute": len(tag_daten(tag)["erledigt"]),
             "mails": _heute_mails(), "mails_offen": mail_review_offen_anzahl(),
             "termine": termine, "naechste": naechste, "kalender": kal,
+            "termine_offen": sum(1 for t in termine if not t.get("vorbei") and not t.get("ganztag")),
+            "naechster": next((t["zeit"] for t in termine if not t.get("vorbei") and not t.get("ganztag")), ""),
             "im_blick": _im_blick(tag, contacts, tasks, kal)}
 
 def termin_notiz(termin_id, body):

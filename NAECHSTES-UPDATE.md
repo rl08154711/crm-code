@@ -441,3 +441,62 @@ Siehe `DEPLOY-031-auftrag-in-acos.md`, `AUFTRAEGE-ABARBEITEN.md`. Sandbox: `test
 **Live 2026-11-17, Nachweis 18.11.2026:** Migration 028 eingespielt, Übergabe über ACOS und Abarbeitung durch die
 geplante Aufgabe „ACOS-Aufträge abarbeiten (Server)“ von Ronald getestet. Die geplante Aufgabe am Mac ist abgeschaltet.
 Sicherung unter `/root/crm-code-vor-auftrag-acos/`.
+
+## 2026-11-20 – Oberfläche „Heute“ und Stammdaten: Feinschliff (keine Migration, live 2026-11-20)
+
+Vorlage: `CRM Heute - Feinschliff.dc.html` aus Claude Design (Nummern A1–A4, H2–H8, S1–S8 wie dort).
+Farben und Dichte bleiben, Akzentfarbe aus den Einstellungen gilt weiter.
+
+| Nr. | Was sich ändert |
+|---|---|
+| A1 | Titel und Navigation in einer Leiste. Rechts: Recherche-Suchfeld (Taste „/“), Stand mit Aktualisieren, Nutzermenü (Kürzel) mit Einstellungen und Abmelden. Neustart, „In neuem Tab öffnen“ und Stoppen nur für Admins im Nutzermenü; `/api/server/restart` und `/api/server/shutdown` antworten Nicht-Admins mit 403. Admin = Rolle `admin`; gibt es keinen Admin, gilt wie bei den Systemeinstellungen jeder Nutzer als Admin. Alle übrigen Bereiche unter „Mehr“. |
+| A2 | Keine Emojis in Navigation, Kartenköpfen, Überschriften, Archiv und Dialogtiteln. |
+| A3 | Eine Badge-Sprache: getönt statt weißer Schrift auf voller Farbe, großer Anfangsbuchstabe. |
+| A4 | Letzter Kontakt relativ („vor 8 Tagen“) mit Ampelpunkt (≤ 30 / ≤ 90 / > 90 Tage), Datum als Tooltip. |
+| H2 | Lagezeile als klickbare Zahlen: überfällig (rot, vorn), Aufgaben heute, Termine offen mit nächstem, Mails zuordnen. |
+| H3 | „＋ Aufgabe“ blau rechts außen; Journal und Unternehmen als Nebenaktionen. |
+| H4 | Briefing unter der Begrüßung: Hinweise nebeneinander, Firmennamen als Link zur Akte, Projektfristen und Ruhende in einer Fußzeile. „Fällig“ und „Überfällig“ entfallen dort. Auf/zu wird weiter gemerkt. |
+| H5 | Zu erledigen: Zahl je Gruppe, Überfällige mit rotem Rand und „seit 4 Tagen“, „Alle auf heute“, je Aufgabe „→ Morgen“ (nutzt das vorhandene Aufgaben-Update), größere Klickfläche der Checkbox, „Diese Woche“ eingeklappt. |
+| H6 | Mail-Review-Karte: Betreff eigene Zeile, Vorschlag als Etiketten, „Übernehmen“ nur bei eindeutigen Mails blau, sonst „Prüfen“, „Später“ als Textlink, Zeit relativ. |
+| H7 | Tagesbilanz als eine Karte: links Erledigtes und Journal mit Uhrzeit, rechts Tageszahlen und Tagesabschluss; Resümee und Briefing nach dem Abschluss aufklappbar. |
+| H8 | Handy `/m`: Aufgaben abhaken (44 px), nächster Termin oben, Kachel „Mails offen“. |
+| S1 | Kennzahlen sind Filter (Alle, Mandanten, Leads, Netzwerk); Überschrift „Unternehmen“. |
+| S2 | Filter in einer Zeile: Ausklapper je Gruppe, aktive Filter als Chip mit ×, Sichten im Ausklapper, A–Z und Sortierung (Name / Letzter Kontakt) in der Zählzeile. Filterlogik und gespeicherte Sichten unverändert. |
+| S3 | Tabelle mit A3/A4, fehlender nächster Schritt als „festlegen“ (öffnet die Akte mit dem Eingabefeld), Branche ausgeblendet bei offener Akte. |
+| S4 | Akte angedockt ab 1100 px Breite: kein Abdunkler, Liste bleibt klickbar, aktive Zeile markiert, ↑/↓ wechselt, Esc schließt. Faktenzeile unter dem Titel, „Aufgabe“ als Hauptaktion. |
+| S5 | Akte-Übersicht: offene Aufgaben (überfällig rot), letzte Aktivitäten, Ansprechpartner, Beteiligte, Verträge, Stammdaten als eingeklappte Zeile. |
+| S6 | „Personen“ statt „Kontakte“, als Reiter direkt neben „Unternehmen“ (interner Schlüssel `persons` bleibt, Favoriten und Sichten gültig). Dubletten als Hinweiszeile nur bei Verdacht. Auf dem Handy heißt der Bereich weiter „Kontakte“. |
+| S7 | Personenliste: Erreichbarkeit als drei Symbolknöpfe (Telefon, Mail, LinkedIn; blass, wenn leer), Kampagne als Etikett am Namen, Sortierung nach Nachname. „＋ Person“ fragt nach dem Unternehmen und öffnet dessen Akte. |
+| S8 | Handy „Kontakte“: Anruf-Knopf je Karte, Kontaktstufe, nächster Schritt hervorgehoben, feste Aktionen Zentrale/Notiz/Karte (Notiz geht ins Journal), Personen mit Knöpfen, Umschalter Unternehmen/Personen. |
+
+Getestet gegen `crm_test` mit Migrationen 002–028 und fiktiven Testdaten: `smoke_test.py` 84/84,
+`test_acos_auftraege.py` 58/58, `test_acos_verweis.py` 14/14, `test_acos_verweis_ablage.py` 14/14,
+`test_kundenwissen_acos.py` 11/11, `test_firma_umbenennen.py` 11/11, `test_schnellauswahl.py` 19/19,
+neu `test_oberflaeche_feinschliff.py` 21/21 (u. a. Restart/Stop als Nicht-Admin abgelehnt, Verschieben,
+Abhaken). Browser 1280 und 390 px: 29 Klickprüfungen grün (Zeilenklick an 24 Punkten, ↑/↓, Esc,
+Filter, Sortierung, /m abhaken), keine JavaScript-Fehler.
+
+```bash
+# [Mac]
+cd ~/Documents/Claude/Projects/CRM/crm-code-upload
+scp CPX12-Postgres/crm_core.py CPX12-Postgres/crm_serve.py root@46.225.13.130:/tmp/
+
+# [Server] Prüfen
+cd /opt/crm && sha1sum crm_core.py crm_serve.py
+#   fe1ecbe9eaca1c010c82ee07519359d69d9c023b  crm_core.py   (live, 18.11.)
+#   d29fe0720c34c90b5844e10c6a31b3365bcf72e4  crm_serve.py
+cd /tmp && sha1sum crm_core.py crm_serve.py
+#   73e15005bc13e064a137c79caf6b5d409de48869  crm_core.py
+#   6c19f8979e740b6d8c74ea9fc54919c230354642  crm_serve.py
+
+# [Server] Rollen ansehen (wer ist Admin?)
+sudo -u crmapp psql -d crm -c "SELECT username, rolle, aktiv FROM users ORDER BY username"
+
+# [Server] Sichern, einspielen, neu starten
+mkdir -p /root/crm-code-vor-feinschliff && cp -p /opt/crm/crm_core.py /opt/crm/crm_serve.py /root/crm-code-vor-feinschliff/
+cp /tmp/crm_core.py /tmp/crm_serve.py /opt/crm/ && chown crmapp:crmapp /opt/crm/crm_core.py /opt/crm/crm_serve.py
+rm /tmp/crm_core.py /tmp/crm_serve.py
+systemctl restart crm && sleep 3 && systemctl is-active crm
+```
+
+Rückweg: `cp /root/crm-code-vor-feinschliff/* /opt/crm/ && chown crmapp:crmapp /opt/crm/*.py && systemctl restart crm`.
