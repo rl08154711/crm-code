@@ -279,6 +279,9 @@ class CRMHandler(BaseHTTPRequestHandler):
             elif path == "/api/heute/start":
                 # Startseite Heute (Umbau Schritt 11): Aufgaben, Mails, Termine, Im Blick
                 self._send_json(core.heute_start_view())
+            elif path == "/api/heute/acos-streifen":
+                # Fokusband (23.11.2026): laufende ACOS-Auftraege, nur Datenbank
+                self._send_json(core.acos_streifen())
             elif path == "/api/heute/tag":
                 # Heute-Ansicht (Migration 010): Journal des Tages, Abschluss, Briefing
                 self._send_json(core.heute_tag_view())

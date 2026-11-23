@@ -2323,7 +2323,7 @@ function renderHeuteStart(d){
         <button type="button" class="hs-spaeter" onclick="heuteMailSpaeter('${m.id}')">Später</button></div></div>`).join('')
     : '<p class="hz-leer">Keine offenen Mails.</p>';
   renderHeuteTermine(d);
-  // Im Blick (unveraendert)
+  renderFokus(d);
   document.getElementById('hs-blick').innerHTML = d.im_blick.length ? d.im_blick.map((b,i)=>`<div class="hs-blick">
       <span class="hs-punkt ${b.art === 'fehler' ? 'rot' : b.art === 'schritt' ? 'grau' : ''}"></span>
       <div class="hs-bt">${b.firma ? `<button type="button" class="hz-link" onclick="${b.firmaId ? `openAkte('${b.firmaId}')` : `openContactByName('${_hE(b.firma)}')`}">${_hE(b.firma)}</button>` : ''}<div>${_hE(b.text)}</div></div>
@@ -2332,18 +2332,70 @@ function renderHeuteStart(d){
         : b.aktion === 'akte' && b.firmaId ? `<button type="button" class="hz-link hs-ba" onclick="openAkte('${b.firmaId}')">Akte</button>` : ''}</div>`).join('')
     : '<p class="hz-leer">Nichts, was gerade Aufmerksamkeit braucht.</p>';
   if(_HZ) renderHeuteAbschluss(_HZ);   // ueberfaellig-Zahl der Tagesbilanz
-  renderHeuteMeldungen();
 }
+// ── Fokusband (23.11.2026, Migration 030): Tagesring, der eine Schritt, Pipeline, ACOS-Streifen ──
+let _FK = 0;
+function _fkRing(erl, gesamt){
+  const u = 2 * Math.PI * 31, anteil = gesamt ? Math.min(1, erl / gesamt) : 0;
+  return `<svg width="76" height="76" viewBox="0 0 76 76" role="img" aria-label="${erl} von ${gesamt} erledigt">
+    <circle cx="38" cy="38" r="31" fill="none" stroke="var(--border)" stroke-width="7"/>
+    ${anteil ? `<circle cx="38" cy="38" r="31" fill="none" stroke="var(--accent)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${(u*anteil).toFixed(1)} ${u.toFixed(1)}" transform="rotate(-90 38 38)"/>` : ''}
+    <text x="38" y="43" text-anchor="middle" class="fk-ringzahl">${gesamt ? erl + '/' + gesamt : '–'}</text></svg>`;
+}
+function _fkKurve(werte){
+  const pkt = werte.map((v,i)=>[i, v]).filter(p=>p[1] !== null);
+  if(pkt.length < 2) return '<div class="fk-klein">Verlauf füllt sich ab jetzt Woche für Woche.</div>';
+  const min = Math.min(...pkt.map(p=>p[1])), max = Math.max(...pkt.map(p=>p[1])), sp = (max - min) || 1;
+  const xy = pkt.map(p=>[(p[0] * 20).toFixed(0), (30 - (p[1] - min) / sp * 26).toFixed(1)]);
+  const l = xy[xy.length - 1];
+  return `<svg width="148" height="34" viewBox="-4 0 152 34" role="img" aria-label="Pipeline der letzten 8 Wochen">
+    <polyline fill="none" stroke="#1D9E75" stroke-width="2" points="${xy.map(p=>p.join(',')).join(' ')}"/>
+    <circle cx="${l[0]}" cy="${l[1]}" r="3" fill="#1D9E75"/></svg>`;
+}
+function renderFokus(d){
+  const el = document.getElementById('hs-fokus'); if(!el) return;
+  const a = d.aufgaben, erl = d.erledigt_heute || 0, gesamt = erl + a.ueber.length + a.heute.length;
+  const f = d.fokus || [], p = d.pipeline || {};
+  if(_FK >= f.length) _FK = 0;
+  const k = f[_FK];
+  const mitte = k ? `<div class="fk-label">Der eine Schritt heute${f.length > 1 ? ` · ${_FK + 1} von ${f.length}` : ''}</div>
+      <button type="button" class="fk-titel" onclick="editTask('${_hE(k.taskId)}')">${_hE(k.titel)}</button>
+      <div class="fk-wo">${[k.firma ? _hsFirmaLink(k) : '', k.termin ? _hE(k.termin) : '', k.wert ? 'Projekt ' + _hE(k.wert) : '']
+          .filter(Boolean).join(' · ') || 'eigene Aufgabe'} · <span class="${k.tage > 0 ? 'fk-rot' : ''}">${_hE(k.grund)}</span></div>
+      <div class="fk-akt"><button type="button" class="btn btn-primary hz-klein" onclick="editTask('${_hE(k.taskId)}')">Öffnen</button>
+        <button type="button" class="btn btn-ghost hz-klein" onclick="fokusErledigt('${_hE(k.taskId)}', this)">Erledigt</button>
+        ${f.length > 1 ? '<button type="button" class="hs-spaeter" onclick="_FK++;renderFokus(_HS)">Nächster Vorschlag ›</button>' : ''}</div>`
+    : `<div class="fk-label">Der eine Schritt heute</div><div class="fk-titel fk-leer">Nichts fällig in den nächsten sieben Tagen</div>
+      <div class="fk-akt"><button type="button" class="btn btn-ghost hz-klein" onclick="newTask()">＋ Aufgabe</button></div>`;
+  const pip = `<div class="fk-label">Pipeline offen</div><div class="fk-summe">${_hE(p.summe_text || '0 €')}</div>
+      <div class="fk-klein ${p.diff > 0 ? 'fk-gruen' : p.diff < 0 ? 'fk-rot' : ''}">${_hE(p.diff_text || (p.anzahl + ' ' + (p.anzahl === 1 ? 'Projekt' : 'Projekte') + ' in Anbahnung und Angebot'))}</div>
+      ${_fkKurve(p.verlauf || [])}${p.ohne_wert ? `<div class="fk-klein">${p.ohne_wert} ohne Wert</div>` : ''}`;
+  el.innerHTML = `<div class="fk-band"><div class="fk-ring">${_fkRing(erl, gesamt)}<span>${gesamt ? 'heute erledigt' : 'nichts fällig'}</span></div>
+      <div class="fk-mitte">${mitte}</div>
+      <button type="button" class="fk-pipe" title="Projekte öffnen" onclick="showPanel('pipeline', document.querySelector('.tab[data-panel=pipeline]'))">${pip}</button></div>
+    <div class="fk-acos" id="fk-acos"></div>`;
+  _fkAcos(d.acos_streifen || []);
+}
+function fokusErledigt(taskId, btn){
+  btn.disabled = true;
+  api('PUT', '/api/tasks/' + encodeURIComponent(taskId), { status: 'Erledigt' })
+    .then(()=>{ _FK = 0; loadHeuteStart(); if(typeof loadHeuteTag==='function') loadHeuteTag(); })
+    .catch(()=>{ btn.disabled = false; alert('Konnte nicht gespeichert werden.'); });
+}
+const _FK_ST = { rueckfrage: ['Rückfrage', 'fk-st-frage'], uebergeben: ['in Arbeit', 'fk-st-arbeit'], bearbeitet: ['abgelegt', 'fk-st-fertig'], fehler: ['Fehler', 'fk-st-fehler'] };
+function _fkAcos(l){
+  const el = document.getElementById('fk-acos'); if(!el) return;
+  el.hidden = !l.length;
+  el.innerHTML = l.map((a, i)=>{ const st = _FK_ST[a.status] || [a.status, ''];
+    const akt = a.status === 'rueckfrage' ? 'Beantworten' : a.status === 'bearbeitet' ? 'Prüfen' : a.status === 'fehler' ? 'Ansehen' : '';
+    return `<div class="fk-az"><span class="fk-ak">${i ? '' : 'ACOS'}</span><span class="fk-st ${st[1]}">${st[0]}</span>
+      <span class="fk-at"><b>${_hE(a.auftrags_id)}</b> ${_hE(a.typ)}${a.firma ? ' · ' + _hE(a.firma) : ''}${a.frage ? `<span class="fk-frage">${_hE(a.frage)}</span>` : ''}</span>
+      ${akt ? `<button type="button" class="hz-link" onclick="editTask('${_hE(a.taskId)}')">${akt}</button>` : `<span class="fk-seit">${_hE(a.seit)}</span>`}</div>`; }).join('');
+}
+// Meldungen (Migration 029) laufen seit 23.11. in den ACOS-Streifen statt nach "Im Blick"
 function renderHeuteMeldungen(){
-  const el = document.getElementById('hs-blick'); if(!el || !_HS) return;
-  el.querySelectorAll('.hs-meld').forEach(x=>x.remove());
-  const l = (typeof _ACOS_MELD !== 'undefined' ? _ACOS_MELD : []);
-  if(!l.length) return;
-  const leer = el.querySelector('.hz-leer'); if(leer) leer.remove();
-  el.insertAdjacentHTML('afterbegin', l.map(m=>`<div class="hs-meld"><span class="hs-punkt" style="background:var(--accent)"></span>
-      <div class="hs-bt"><b>${_hE(m.titel)}</b> · ${_hE(m.auftrags_id)}${m.firma ? ` · <button type="button" class="hz-link" onclick="openAkte('${_hE(m.firmaId)}')">${_hE(m.firma)}</button>` : ''}
-        <div>${_hE(m.aufgabe)}</div>${m.art === 'rueckfrage' ? `<div style="color:#334155">${_hE(m.text.replace(/^Rückfrage von ACOS:\s*/,''))}</div>` : ''}</div>
-      <span class="hs-ba"><button type="button" class="hz-link" onclick="editTask('${_hE(m.taskId)}')">${m.art === 'rueckfrage' ? 'Beantworten' : 'Öffnen'}</button> · <button type="button" class="hz-link" onclick="acosMeldungGesehen({ids:[${m.id}]})">Gesehen</button></span></div>`).join(''));
+  if(!document.getElementById('fk-acos')) return;
+  api('GET', '/api/heute/acos-streifen').then(l=>{ if(_HS) _HS.acos_streifen = l; _fkAcos(l); }).catch(()=>{});
 }
 function heuteVerschieben(ids, ziel, btn){
   // H5: Faelligkeit verschieben, einzeln ("→ Morgen") oder gesammelt ("Alle auf heute")
@@ -3565,6 +3617,36 @@ tr.hidden{{display:none}}
 .nav-favs .tab{{padding:.95rem 1rem .85rem}}
 /* Heute: Journal, Abschluss, Briefing (Migration 010) */
 .hs-kopf{{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}}
+.hs-fokus{{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1rem}}
+.hs-fokus:empty{{display:none}}
+.fk-band{{display:grid;grid-template-columns:118px minmax(0,1fr) 190px}}
+.fk-ring{{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.2rem;padding:.8rem;border-right:1px solid var(--border);font-size:.74rem;color:var(--text2)}}
+.fk-ringzahl{{font-size:16px;font-weight:700;fill:var(--text)}}
+.fk-mitte{{padding:.85rem 1.1rem;min-width:0}}
+.fk-label{{font-size:.74rem;color:var(--text2);margin-bottom:.15rem}}
+.fk-titel{{display:block;background:none;border:0;padding:0;font:inherit;font-size:1.12rem;font-weight:700;color:var(--text);cursor:pointer;text-align:left;line-height:1.3}}
+.fk-titel:hover{{color:var(--accent)}}
+.fk-leer{{color:var(--text2);font-weight:600;cursor:default}}
+.fk-wo{{font-size:.8rem;color:var(--text2);margin:.2rem 0 .6rem}}
+.fk-wo .hz-link{{font-size:inherit}}
+.fk-akt{{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}}
+.fk-pipe{{display:block;text-align:left;background:none;border:0;border-left:1px solid var(--border);padding:.85rem 1rem;font:inherit;cursor:pointer;color:inherit}}
+.fk-pipe:hover{{background:var(--surface2)}}
+.fk-summe{{font-size:1.35rem;font-weight:700;color:var(--text);line-height:1.2}}
+.fk-klein{{font-size:.74rem;color:var(--text2);margin:.1rem 0 .3rem}}
+.fk-gruen{{color:#15803d}} .fk-rot{{color:#b91c1c}}
+.fk-acos{{border-top:1px solid var(--border);background:var(--surface2);padding:.45rem 1.1rem;display:flex;flex-direction:column;gap:.35rem}}
+.fk-acos[hidden]{{display:none}}
+.fk-az{{display:flex;align-items:center;gap:.65rem;font-size:.82rem;min-width:0}}
+.fk-ak{{width:2.6rem;flex:none;font-size:.74rem;color:var(--text2);font-weight:600}}
+.fk-st{{flex:none;min-width:4.6rem;text-align:center;font-size:.7rem;font-weight:600;padding:.1rem .5rem;border-radius:999px}}
+.fk-st-frage{{background:#fef3c7;color:#92400e}} .fk-st-arbeit{{background:#eef2ff;color:#3730a3}}
+.fk-st-fertig{{background:#dcfce7;color:#166534}} .fk-st-fehler{{background:#fee2e2;color:#991b1b}}
+.fk-at{{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.fk-at b{{font-weight:600}}
+.fk-frage{{color:var(--text2);margin-left:.4rem}}
+.fk-seit{{flex:none;font-size:.74rem;color:var(--text2)}}
+@media (max-width:760px){{.fk-band{{grid-template-columns:96px minmax(0,1fr)}}.fk-pipe{{grid-column:1/-1;border-left:0;border-top:1px solid var(--border)}}}}
 .hs-datum{{font-size:.85rem;color:var(--text2)}}
 .hs-gruss{{margin:.15rem 0 .25rem;font-size:1.6rem}}
 .hs-lage{{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.35rem}}
@@ -4276,6 +4358,7 @@ tr.st-hidden{{display:none !important}}
       <button type="button" class="btn btn-primary" onclick="newTask()">＋ Aufgabe</button>
     </div>
   </div>
+  <section class="hs-fokus" id="hs-fokus" aria-label="Fokus heute"></section>
   <div id="h-briefing"></div>
   <div class="hs-raster">
     <div class="hs-spalte">
@@ -10381,6 +10464,94 @@ def _im_blick(tag, contacts, tasks, kal):
                         "text": f"Vertrag „{r['bezeichnung']}“ kündbar bis {_dm(r['kuendbar_bis'])}", "aktion": "akte"})
     return out[:10]
 
+# ── Fokusband (23.11.2026, Migration 030) ────────────────────────────────
+PIPELINE_PHASEN = ("anbahnung", "angebot")
+
+def _euro_kurz(n):
+    return f"{n:,.0f} €".replace(",", ".")
+
+def pipeline_stand(tag):
+    """Offene Pipeline (Anbahnung, Angebot): Summe heute, Abstand zur Vorwoche, Wochenwerte der letzten 8 Wochen.
+    Schreibt den heutigen Stand nach pipeline_stand (ein Wert je Tag, der letzte gilt)."""
+    r = _q1("""SELECT coalesce(sum(value), 0) AS summe, count(*) AS anzahl, count(*) FILTER (WHERE value IS NULL OR value = 0) AS ohne
+               FROM projekte WHERE archiviert_am IS NULL AND status = ANY(%s)""", (list(PIPELINE_PHASEN),))
+    summe = float(r["summe"] or 0)
+    out = {"summe": summe, "summe_text": _euro_kurz(summe), "anzahl": r["anzahl"], "ohne_wert": r["ohne"],
+           "diff": None, "diff_text": "", "verlauf": []}
+    if not _tabelle_da("pipeline_stand"):
+        return out
+    _x("""INSERT INTO pipeline_stand (tag, summe, anzahl, ohne_wert) VALUES (%s, %s, %s, %s)
+          ON CONFLICT (tag) DO UPDATE SET summe=EXCLUDED.summe, anzahl=EXCLUDED.anzahl, ohne_wert=EXCLUDED.ohne_wert, erfasst_am=now()""",
+       (tag, summe, r["anzahl"], r["ohne"]))
+    vor = _q1("SELECT summe FROM pipeline_stand WHERE tag <= %s ORDER BY tag DESC LIMIT 1", (tag - timedelta(days=7),))
+    if vor:
+        d = summe - float(vor["summe"])
+        out["diff"] = d
+        out["diff_text"] = ("±0 €" if abs(d) < 0.5 else ("+" if d > 0 else "−") + _euro_kurz(abs(d))) + " zur Vorwoche"
+    werte = []
+    for w in range(7, -1, -1):
+        z = _q1("SELECT summe FROM pipeline_stand WHERE tag <= %s AND tag > %s ORDER BY tag DESC LIMIT 1",
+                (tag - timedelta(days=7 * w), tag - timedelta(days=7 * (w + 1))))
+        werte.append(float(z["summe"]) if z else None)
+    out["verlauf"] = werte
+    return out
+
+def fokus_kandidaten(tag, auf=None):
+    """Der eine Schritt heute: aelteste Ueberfaellige zuerst, dann Heutiges nach Projektwert, dann die Woche.
+    Aufgaben, die gerade bei ACOS liegen, zaehlen nicht (dort ist nichts zu tun). Hoechstens 5 Vorschlaege."""
+    auf = auf or _heute_aufgaben(tag)
+    alle = [t for t in auf["ueber"] + auf["heute"] + auf["woche"] if not t.get("acos")]
+    if not alle:
+        return []
+    werte = {r["task_id"]: float(r["value"] or 0) for r in _q(
+        """SELECT t.task_id, p.value FROM tasks t LEFT JOIN projekte p ON p.id = t.projekt_id WHERE t.task_id = ANY(%s)""",
+        ([t["taskId"] for t in alle],))}
+    ueber = sorted([t for t in alle if t["tage"] > 0], key=lambda t: -t["tage"])
+    heute = sorted([t for t in alle if t["tage"] == 0], key=lambda t: -werte.get(t["taskId"], 0))
+    woche = [t for t in alle if t["tage"] < 0]
+    from zoneinfo import ZoneInfo
+    out = []
+    for t in (ueber + heute + woche)[:5]:
+        k = {k: t[k] for k in ("taskId", "titel", "firma", "firmaId", "projekt", "tage", "faellig")}
+        w = werte.get(t["taskId"], 0)
+        k["wert"] = _euro_kurz(w) if w else ""
+        k["grund"] = (f"seit {t['tage']} {'Tag' if t['tage'] == 1 else 'Tagen'} überfällig" if t["tage"] > 0
+                      else "heute fällig" if t["tage"] == 0 else t["faellig"])
+        k["termin"] = ""
+        if t.get("firmaId") and _tabelle_da("termin"):
+            tr = _q1("""SELECT titel, beginn, ganztag FROM termin WHERE firma_id = %s AND beginn >= now()
+                        AND beginn < now() + interval '14 days' ORDER BY beginn LIMIT 1""", (int(t["firmaId"]),))
+            if tr:
+                b = tr["beginn"].astimezone(ZoneInfo("Europe/Berlin"))
+                tagtext = "heute" if b.date() == tag else "morgen" if b.date() == tag + timedelta(days=1) else f"{WT_KURZ[b.weekday()]} {_dm(b.date())}"
+                k["termin"] = f"{tr['titel'] or 'Termin'} {tagtext}" + ("" if tr["ganztag"] else " " + b.strftime("%H:%M"))
+        out.append(k)
+    return out
+
+def acos_streifen():
+    """Laufende ACOS-Auftraege fuer "Heute": alles, was noch nicht abgeschlossen oder ersetzt ist."""
+    if not _tabelle_da("acos_auftraege"):
+        return []
+    import acos_auftraege
+    from zoneinfo import ZoneInfo
+    jetzt = datetime.now(ZoneInfo("Europe/Berlin"))
+    out = []
+    for r in _q("""SELECT a.auftrags_id, a.task_id, a.status, a.artefakttyp, a.rueckfrage, a.uebergeben_am, a.geaendert_am,
+                          a.angelegt_am, f.name AS firma, f.id AS fid, t.title AS aufgabe
+                   FROM acos_auftraege a LEFT JOIN firmen f ON f.id = a.firma_id LEFT JOIN tasks t ON t.task_id = a.task_id
+                   WHERE a.status IN ('uebergeben', 'rueckfrage', 'bearbeitet', 'fehler')
+                   ORDER BY CASE a.status WHEN 'rueckfrage' THEN 0 WHEN 'fehler' THEN 1 WHEN 'bearbeitet' THEN 2 ELSE 3 END,
+                            a.geaendert_am DESC NULLS LAST LIMIT 8"""):
+        seit = r["geaendert_am"] or r["uebergeben_am"] or r["angelegt_am"]
+        min_ = int((jetzt - seit).total_seconds() // 60) if seit else None
+        seit_text = ("" if min_ is None else "gerade eben" if min_ < 2 else f"seit {min_} Min." if min_ < 60
+                     else f"seit {min_ // 60} Std." if min_ < 48 * 60 else f"seit {min_ // 1440} Tagen")
+        out.append({"auftrags_id": r["auftrags_id"], "taskId": r["task_id"], "status": r["status"],
+                    "typ": acos_auftraege.typ_titel(r["artefakttyp"]), "firma": r["firma"] or "",
+                    "firmaId": str(r["fid"] or ""), "aufgabe": r["aufgabe"] or "", "seit": seit_text,
+                    "frage": (r["rueckfrage"] or "") if r["status"] == "rueckfrage" else ""})
+    return out
+
 def heute_start_view():
     from zoneinfo import ZoneInfo
     tag = heute_lokal()
@@ -10390,10 +10561,13 @@ def heute_start_view():
     termine, naechste = _heute_termine(tag, jetzt)
     monate = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember")
     stunde = jetzt.hour
+    aufgaben = _heute_aufgaben(tag)
+    erledigt_heute = len(tag_daten(tag)["erledigt"])
     return {"datum_lang": f"{WOCHENTAGE[tag.weekday()]}, {tag.day}. {monate[tag.month - 1]} {tag.year}",
             "gruss": "Guten Morgen" if stunde < 11 else "Guten Tag" if stunde < 18 else "Guten Abend",
-            "jetzt": jetzt.strftime("%H:%M"), "aufgaben": _heute_aufgaben(tag),
-            "erledigt_heute": len(tag_daten(tag)["erledigt"]),
+            "jetzt": jetzt.strftime("%H:%M"), "aufgaben": aufgaben,
+            "erledigt_heute": erledigt_heute,
+            "fokus": fokus_kandidaten(tag, aufgaben), "pipeline": pipeline_stand(tag), "acos_streifen": acos_streifen(),
             "mails": _heute_mails(), "mails_offen": mail_review_offen_anzahl(),
             "termine": termine, "naechste": naechste, "kalender": kal,
             "termine_offen": sum(1 for t in termine if not t.get("vorbei") and not t.get("ganztag")),

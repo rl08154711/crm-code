@@ -37,6 +37,7 @@ Offene Aufträge findet `am_acos_knowledge_list` mit `kind: "crm_auftrag"` ohne 
 
 ## Im CRM danach
 
-„Bei ACOS nachsehen“ (oder der Abgleich um 6:30): Ergebnis → `<Kunde>/ACOS/Wissen`, Kundenwissen,
+Automatisch (seit 20.11.2026, Migration 029): Das CRM prüft offene Aufträge im eingestellten Takt (Standard 5 Minuten).
+Meldung auf „Heute“ bei Rückfrage, bei „Ergebnis liegt in ACOS“ und nach der Ablage. Ergebnis → `<Kunde>/ACOS/Wissen`, Kundenwissen,
 Aufgabe „Bearbeitet“, Verlauf, Journal. Rückfrage → steht in der Aufgabe, Antwort legt den Folgeauftrag an.
 Abschließen nur Ronald mit „Geprüft, Aufgabe abschließen“.

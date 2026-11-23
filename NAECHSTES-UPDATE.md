@@ -565,3 +565,24 @@ Hinzufügen bleibt sichtbar. ACOS-Karte: kürzere Texte, Abgleichberichte eingek
 Sandbox: alle Tests grün (smoke, 61, 33, 14, 14, 11, 11, 19, 21), keine JavaScript-Fehler.
 crm_core.py: live vorher 4795d8be335b6ae29f170b6f40a4ec802968ac1d, neu 23f126dfb77888aea711dbf338a6eb7afc03d77f.
 Sicherung: /root/crm-code-vor-einstellungen/. Rückweg: Datei zurückkopieren, chown, systemctl restart crm.
+
+## 2026-11-23 – Fokusband auf „Heute“ mit ACOS-Streifen (Migration 030, live 2026-11-23)
+
+Unter der Begrüßung ein Band:
+- **Tagesring:** heute erledigt / (erledigt + überfällig + heute fällig).
+- **Der eine Schritt heute:** älteste überfällige Aufgabe zuerst, dann die heute fälligen nach Projektwert, dann die Woche; Aufgaben, die bei ACOS liegen, zählen nicht. Bis zu 5 Vorschläge, „Nächster Vorschlag ›“ blättert. Dazu Firma, nächster Termin mit dieser Firma (14 Tage), Projektwert, Grund. Knöpfe Öffnen und Erledigt.
+- **Pipeline offen:** Summe der Projekte in Anbahnung und Angebot (Läuft zählt nicht), Abstand zur Vorwoche, Kurve über 8 Wochen. Klick öffnet Projekte. Der Tageswert wird beim Laden von „Heute“ in `pipeline_stand` geschrieben (Migration 030); Vergleich und Kurve füllen sich ab dem Einspielen.
+- **ACOS-Streifen** unter dem Band, nur solange ein Auftrag offen ist (übergeben, Rückfrage, abgelegt, Fehler): Rückfrage mit Frage und „Beantworten“, abgelegt mit „Prüfen“, in Arbeit mit „seit …“. Aktualisiert sich jede Minute (`/api/heute/acos-streifen`, nur Datenbank). Die ACOS-Meldungen stehen nicht mehr in „Im Blick“; die Einblendung unten rechts bleibt.
+
+Sandbox (crm_test, Migrationen 002–030, fiktive Daten): smoke grün, neu `test_fokusband.py` 22/22, übrige Tests unverändert grün
+(61, 33, 14, 14, 11, 11, 19, 21), Browser 29/29 Klickprüfungen, Fokusband durchgeklickt, keine JavaScript-Fehler.
+
+| Datei | live vorher | neu |
+|---|---|---|
+| crm_core.py | 23f126df… | 2121e938d442a074996210dd5fa2a78baf86a3ac |
+| crm_serve.py | e86d8bf1… | 519325659d90cd7b2f0c4c5b68bbf42f51e6a795 |
+| migration_030_pipeline_stand.sql | – | 3a6e22d58c27cfa991d4d8409fcf747c0f39c947 |
+
+Sicherung: `/root/crm-code-vor-fokusband/`. Rückweg: beide Dateien zurück, chown, `systemctl restart crm`; die Tabelle aus 030 stört den alten Code nicht.
+
+**Live 2026-11-23:** Migration 030 eingespielt, Code eingespielt, von Ronald bestätigt.
