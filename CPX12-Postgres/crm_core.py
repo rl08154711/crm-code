@@ -1218,7 +1218,7 @@ function renderAcosStatus(d){
     const zahlen = Object.keys(ACOS_ZAHLEN).filter(k=>z[k]).map(k=>`${ACOS_ZAHLEN[k]}: ${z[k]}`).join(' · ');
     const kopf = `${_aE(l.start)} · ${l.modus === 'scharf' ? 'Scharf' : 'Trockenlauf'} · ${!l.fertig ? 'läuft…' : (l.ok ? '✓' : '✕ ' + _aE(l.meldung))}${zahlen ? ' · ' + zahlen : ''}`;
     const zeilen = (l.bericht||[]).map(b=>`<li><strong>${_aE(b.firma)}</strong>: ${_aE(b.text)}</li>`).join('');
-    return `<details class="acos-lauf" ${i === 0 ? 'open' : ''}><summary>${kopf}</summary>
+    return `<details class="acos-lauf"><summary>${kopf}</summary>
       ${l.ok && l.meldung ? `<div class="acos-klein">${_aE(l.meldung)}</div>` : ''}${zeilen ? `<ul>${zeilen}</ul>` : ''}</details>`;
   }).join('');
 }
@@ -2763,6 +2763,7 @@ function saveSystem(){
 function loadIgnoreList(){
   api('GET','/api/mail-ignore').then(list=>{
     const el = document.getElementById('set-ign-list');
+    const zahl = document.getElementById('set-ign-zahl'); if(zahl) zahl.textContent = '(' + list.length + ')';
     el.innerHTML = !list.length ? '<div class="log-empty">Keine Einträge.</div>' : list.map(i=>`<div class="set-ign-row">
       <span class="set-ign-art">${i.art==='domain'?'Domain':'Adresse'}</span><span>${_sE(i.muster)}</span>
       <button class="log-delete" title="Entfernen" ${_SET && !_SET.darf_system?'disabled':''} onclick="removeIgnore('${_sE(i.muster).replace(/'/g,"\\'")}')">✕</button></div>`).join('');
@@ -4157,9 +4158,12 @@ tr.st-hidden{{display:none !important}}
 .je-msg{{font-size:.78rem;margin-right:.4rem}}
 .je-msg.ok{{color:#15803d}} .je-msg.err{{color:#dc2626}}
 #je-text{{width:100%;box-sizing:border-box;resize:vertical;font-family:inherit}}
-.set-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem}}
+.set-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem;align-items:start}}
+.set-auf summary{{cursor:pointer;font-size:.8rem;color:var(--accent2);margin:.2rem 0 .4rem}}
+.set-auf[open] summary{{margin-bottom:.5rem}}
 .set-card{{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem 1.1rem}}
 .set-wide{{grid-column:1/-1}}
+.set-stapel{{display:flex;flex-direction:column;gap:1rem;min-width:0}}
 .set-card h3{{font-size:.95rem;margin-bottom:.35rem;display:flex;align-items:center;gap:.5rem}}
 .set-who{{font-weight:400;color:var(--text2);font-size:.85rem}}
 .set-badge{{font-size:.65rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;background:var(--surface2);border:1px solid var(--border);color:var(--text2)}}
@@ -4536,6 +4540,7 @@ tr.st-hidden{{display:none !important}}
         <button class="btn btn-primary" onclick="savePersonal()">Speichern</button></div>
     </section>
 
+    <div class="set-stapel">
     <section class="set-card">
       <h3>Passwort ändern</h3>
       <!-- Benutzername fuer Passwort-Manager (16.11.2026): ohne dieses Feld nehmen Safari und
@@ -4547,6 +4552,16 @@ tr.st-hidden{{display:none !important}}
       <div class="set-actions"><span class="set-msg" id="set-pw-msg"></span>
         <button class="btn btn-primary" onclick="changePassword()">Passwort ändern</button></div>
     </section>
+
+    <section class="set-card set-sys">
+      <h3>Aufgaben und KI <span class="set-badge">System</span></h3>
+      <label class="set-row">Erledigte Aufgaben automatisch archivieren<select id="set-autoarchiv" class="j-select"></select></label>
+      <label class="set-row set-inline"><input type="checkbox" id="set-ki"> KI-Bewertung im Mail-Review</label>
+      <p class="set-warn">Eingeschaltet gehen Betreff und Text jeder eingehenden Mail im Klartext an Anthropic. Erst einschalten, wenn die Pseudonymisierung über ACOS steht.</p>
+      <div class="set-actions"><span class="set-msg" id="set-sys-msg"></span>
+        <button class="btn btn-primary" onclick="saveSystem()">Speichern</button></div>
+    </section>
+    </div>
 
     <section class="set-card set-sys">
       <h3>Mail-Abruf <span class="set-badge">System</span></h3>
@@ -4565,38 +4580,29 @@ tr.st-hidden{{display:none !important}}
     </section>
 
     <section class="set-card set-sys">
-      <h3>Aufgaben und KI <span class="set-badge">System</span></h3>
-      <label class="set-row">Erledigte Aufgaben automatisch archivieren<select id="set-autoarchiv" class="j-select"></select></label>
-      <label class="set-row set-inline"><input type="checkbox" id="set-ki"> KI-Bewertung im Mail-Review</label>
-      <p class="set-warn">Eingeschaltet gehen Betreff und Text jeder eingehenden Mail im Klartext an Anthropic. Erst einschalten, wenn die Pseudonymisierung über ACOS steht.</p>
-      <div class="set-actions"><span class="set-msg" id="set-sys-msg"></span>
-        <button class="btn btn-primary" onclick="saveSystem()">Speichern</button></div>
-    </section>
-
-    <section class="set-card set-sys set-wide">
       <h3>ACOS-Abgleich <span class="set-badge">System</span></h3>
       <p class="set-hint" id="acos-stand">Lade…</p>
       <label class="set-row">Modus<select id="set-acos-modus" class="j-select">
-        <option value="trocken">Trockenlauf – nur Bericht, schreibt nichts nach ACOS und in die Nextcloud</option>
-        <option value="scharf">Scharf – legt an, sendet Stammdaten, archiviert, legt Wissensobjekte ab</option>
+        <option value="trocken">Trockenlauf – nur Bericht</option>
+        <option value="scharf">Scharf – schreibt nach ACOS und Nextcloud</option>
       </select></label>
       <p class="set-hint" id="acos-ausgeblendet"></p>
       <label class="set-row">Offene Aufträge prüfen<select id="set-acos-takt" class="j-select">
         <option value="2">alle 2 Minuten</option><option value="5">alle 5 Minuten</option><option value="10">alle 10 Minuten</option>
         <option value="15">alle 15 Minuten</option><option value="30">alle 30 Minuten</option><option value="0">aus</option></select></label>
-      <p class="set-hint">Fragt nur dann bei ACOS nach, wenn ein Auftrag aus einer Aufgabe dort liegt – und nur für diese Mandanten. Ohne offenen Auftrag kein Abruf. Rückfragen und Ergebnisse erscheinen dann automatisch auf „Heute“ und in der Aufgabe. <span id="acos-takt-zuletzt"></span></p>
+      <p class="set-hint">Nur wenn ein Auftrag bei ACOS liegt, nur für diesen Mandanten. Rückfragen und Ergebnisse erscheinen von selbst auf „Heute“. <span id="acos-takt-zuletzt"></span></p>
       <label class="set-row">Voller Abgleich<span style="display:flex;gap:.5rem;align-items:center">
         <select id="set-acos-voll" class="j-select" onchange="document.getElementById('set-acos-uhr').disabled=this.value!=='taeglich'">
           <option value="taeglich">täglich um</option><option value="stuendlich">stündlich</option></select>
         <input id="set-acos-uhr" type="time" value="06:30" style="width:7rem"></span></label>
-      <p class="set-hint">Stammdaten aller verknüpften Unternehmen, alle Wissensobjekte und die Skill-Liste. Verknüpft oder angelegt wird nur, was du am Unternehmen bestätigt hast; gelöscht wird nie.</p>
+      <p class="set-hint">Stammdaten, Wissensobjekte und Skill-Liste. Angelegt wird nur, was du bestätigt hast; gelöscht wird nie.</p>
       <div class="set-actions"><span class="set-msg" id="set-acos-msg"></span>
         <button class="btn btn-ghost" onclick="acosAbgleichStarten()">↻ Jetzt abgleichen</button>
         <button class="btn btn-primary" onclick="saveAcosModus()">Speichern</button></div>
       <div id="acos-laeufe"></div>
     </section>
 
-    <section class="set-card set-sys set-wide">
+    <section class="set-card set-sys">
       <h3>Tagesabschluss an ACOS <span class="set-badge">System</span></h3>
       <p class="set-hint">Jeder Tagesabschluss geht zusätzlich als Markdown-Datei in den Kundenordner des Unternehmens, dem dieses CRM gehört (Unterordner Tagesabschluss) und von dort in dessen ACOS-Akte. Die Bewertung entsteht in ACOS mit Pseudonymisierung. Legt sie dort ein Wissensobjekt „Tagesbewertung JJJJ-MM-TT“ an, zeigt das CRM es nach dem nächsten Abgleich am Tag und im Briefing.</p>
       <p class="set-row">Empfänger (Inhaber dieses CRM): <strong id="set-ta-firma"></strong></p>
@@ -4605,14 +4611,15 @@ tr.st-hidden{{display:none !important}}
         <button class="btn btn-primary" onclick="saveTagesabschlussAcos()">Speichern</button></div>
     </section>
 
-    <section class="set-card set-sys set-wide">
+    <section class="set-card set-sys">
       <h3>Ignorierte Absender <span class="set-badge">System</span></h3>
       <p class="set-hint">Mails von diesen Adressen oder Domains landen nicht im Mail-Review.</p>
       <div class="set-two">
         <input id="set-ign-neu" placeholder="name@example.de oder example.de">
         <button class="btn btn-ghost" onclick="addIgnore()">＋ Hinzufügen</button>
       </div>
-      <div id="set-ign-list" class="set-ign"></div>
+      <details class="set-auf" id="set-ign-auf"><summary>Liste anzeigen <span id="set-ign-zahl"></span></summary>
+        <div id="set-ign-list" class="set-ign"></div></details>
     </section>
   </div>
   <p class="set-hint" id="set-sys-note" style="display:none;margin-top:.75rem">Systemeinstellungen kann nur ein Administrator ändern.</p>

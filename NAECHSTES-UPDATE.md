@@ -556,3 +556,12 @@ Rückweg: Dateien von dort zurückkopieren, `daemon-reload`, `systemctl restart 
 Danach: In der geplanten Aufgabe „ACOS-Aufträge abarbeiten (Server)“ den Schlusssatz „Bei ACOS nachsehen“ ersetzen.
 
 **Live 2026-11-20:** Migration 029 eingespielt, Timer im Minutentakt läuft fehlerfrei, Prüfsummen bestätigt.
+
+## 2026-11-23 – Einstellungen kompakter (keine Migration, nur crm_core.py, live 2026-11-23)
+
+ACOS-Abgleich, Tagesabschluss an ACOS und Ignorierte Absender stehen nebeneinander statt über die volle Breite; „Aufgaben und KI“
+steht unter „Passwort ändern“, damit oben drei Spalten aufgehen. Ignorierte Absender: Liste eingeklappt („Liste anzeigen (N)“),
+Hinzufügen bleibt sichtbar. ACOS-Karte: kürzere Texte, Abgleichberichte eingeklappt. Schmale Fenster und Handy: untereinander wie bisher.
+Sandbox: alle Tests grün (smoke, 61, 33, 14, 14, 11, 11, 19, 21), keine JavaScript-Fehler.
+crm_core.py: live vorher 4795d8be335b6ae29f170b6f40a4ec802968ac1d, neu 23f126dfb77888aea711dbf338a6eb7afc03d77f.
+Sicherung: /root/crm-code-vor-einstellungen/. Rückweg: Datei zurückkopieren, chown, systemctl restart crm.
