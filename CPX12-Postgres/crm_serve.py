@@ -504,11 +504,14 @@ class CRMHandler(BaseHTTPRequestHandler):
                 core.ignore_mail_review_item(parts[2], body.get("scope", "adresse"))
             elif path == "/api/mail-ignore":
                 core.add_mail_ignore(body.get("muster", ""), body.get("art", "adresse"))
-            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks" and parts[3] in ("auftrag", "auftrag-abschliessen"):
+            elif len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks" and parts[3] in ("auftrag", "auftrag-abschliessen", "auftrag-zurueckziehen"):
                 import acos_auftraege
                 try:
                     if parts[3] == "auftrag":
                         self._send_json(acos_auftraege.uebergeben(unquote(parts[2]), body, self._current_user()))
+                    elif parts[3] == "auftrag-zurueckziehen":
+                        # 25.11.2026: Auftrag zurueckziehen, Aufgabe wieder frei
+                        self._send_json(acos_auftraege.zurueckziehen(unquote(parts[2]), self._current_user(), body.get("auftrags_id")))
                     else:
                         self._send_json(acos_auftraege.abschliessen(unquote(parts[2]), self._current_user()))
                 except FileNotFoundError as e:

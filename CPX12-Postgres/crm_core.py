@@ -1951,9 +1951,12 @@ function akaSkillInfo(){
       : '<span style="color:#b45309">In ACOS fehlt: ' + v.fehlt.map(_akE).join(', ') + '. ACOS wird voraussichtlich zurückfragen.</span>';
   }).catch(()=>{});
 }
+let _akaLaeuft = false;   // Doppelklick-/Doppel-Enter-Schutz (25.11.2026)
 function akteAufgabeSpeichern(){
+  if(_akaLaeuft) return;
   const titel = document.getElementById('aka-titel').value.trim();
   if(!titel){ _akMsg('Bitte beschreiben, was zu tun ist.'); return; }
+  _akaLaeuft = true; setTimeout(()=>{ _akaLaeuft = false; }, 3000);
   const mitAcos = !!(document.getElementById('aka-acos-an') && document.getElementById('aka-acos-an').checked);
   if(mitAcos && _AK.typ === 'firma'){
     const thema = document.getElementById('aka-thema').value.trim();
@@ -2390,7 +2393,15 @@ function _fkAcos(l){
     const akt = a.status === 'rueckfrage' ? 'Beantworten' : a.status === 'bearbeitet' ? 'Prüfen' : a.status === 'fehler' ? 'Ansehen' : '';
     return `<div class="fk-az"><span class="fk-ak">${i ? '' : 'ACOS'}</span><span class="fk-st ${st[1]}">${st[0]}</span>
       <span class="fk-at"><b>${_hE(a.auftrags_id)}</b> ${_hE(a.typ)}${a.firma ? ' · ' + _hE(a.firma) : ''}${a.frage ? `<span class="fk-frage">${_hE(a.frage)}</span>` : ''}</span>
-      ${akt ? `<button type="button" class="hz-link" onclick="editTask('${_hE(a.taskId)}')">${akt}</button>` : `<span class="fk-seit">${_hE(a.seit)}</span>`}</div>`; }).join('');
+      ${akt ? `<button type="button" class="hz-link" onclick="editTask('${_hE(a.taskId)}')">${akt}</button>` : `<span class="fk-seit">${_hE(a.seit)}</span>`}
+      ${a.status !== 'bearbeitet' ? `<button type="button" class="fk-weg" title="Auftrag zurückziehen" aria-label="Auftrag ${_hE(a.auftrags_id)} zurückziehen" onclick="fkZurueckziehen('${_hE(a.taskId)}','${_hE(a.auftrags_id)}',this)">×</button>` : ''}</div>`; }).join('');
+}
+function fkZurueckziehen(taskId, aid, btn){
+  if(!confirm(aid + ' zurückziehen? ACOS bearbeitet den Auftrag dann nicht mehr, die Aufgabe ist wieder frei. In ACOS wird nichts gelöscht.')) return;
+  btn.disabled = true;
+  api('POST', '/api/tasks/' + encodeURIComponent(taskId) + '/auftrag-zurueckziehen', { auftrags_id: aid })
+    .then(()=>{ loadHeuteStart(); if(typeof acosMeldungenLaden === 'function') acosMeldungenLaden(); })
+    .catch(t=>{ btn.disabled = false; let x = 'Konnte nicht zurückgezogen werden.'; try { x = JSON.parse(t).error || x; } catch(e){} alert(x); });
 }
 // Meldungen (Migration 029) laufen seit 23.11. in den ACOS-Streifen statt nach "Im Blick"
 function renderHeuteMeldungen(){
@@ -3646,6 +3657,8 @@ tr.hidden{{display:none}}
 .fk-at b{{font-weight:600}}
 .fk-frage{{color:var(--text2);margin-left:.4rem}}
 .fk-seit{{flex:none;font-size:.74rem;color:var(--text2)}}
+.fk-weg{{flex:none;background:none;border:0;color:var(--text2);font-size:1rem;line-height:1;cursor:pointer;padding:0 .2rem}}
+.fk-weg:hover{{color:#b91c1c}}
 @media (max-width:760px){{.fk-band{{grid-template-columns:96px minmax(0,1fr)}}.fk-pipe{{grid-column:1/-1;border-left:0;border-top:1px solid var(--border)}}}}
 .hs-datum{{font-size:.85rem;color:var(--text2)}}
 .hs-gruss{{margin:.15rem 0 .25rem;font-size:1.6rem}}
@@ -3861,6 +3874,14 @@ button.hz-link:disabled{{opacity:.5}}
 .auf-karte{{margin:.35rem 0;padding:.45rem .6rem;background:var(--surface);border-radius:6px}}
 .auf-klein{{font-size:.78rem;opacity:.8;margin:.2rem 0}}
 .auf-rueck{{font-size:.8rem;margin:.3rem 0;color:#b45309}}
+.auf-opts{{display:flex;flex-direction:column;gap:.4rem;margin:.4rem 0 .6rem}}
+.auf-opt{{display:block;border:1px solid var(--border);border-radius:8px;padding:.45rem .6rem;cursor:pointer;font-size:.82rem;background:var(--surface)}}
+.auf-opt.an{{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}}
+.auf-opt-k{{display:flex;gap:.45rem;align-items:flex-start;line-height:1.4}}
+.auf-opt-k input{{margin-top:.2rem;flex:none;width:auto!important;height:auto;padding:0}}
+#t-auftrag-box .auf-opt{{text-transform:none;letter-spacing:normal;font-weight:400;color:var(--text);margin:0}}
+.auf-opt-t{{display:none;width:100%;box-sizing:border-box;margin-top:.4rem;font:inherit;font-size:.8rem}}
+.auf-opt.an .auf-opt-t{{display:block}}
 .auf-st{{font-weight:600}}
 .auf-bearbeitet{{color:#15803d}} .auf-fehler{{color:#b91c1c}} .auf-rueckfrage{{color:#b45309}}
 .auf-neu{{margin-top:.5rem}} .auf-neu summary{{cursor:pointer;font-size:.85rem}}
@@ -5559,9 +5580,22 @@ function aufZeichnen() {{
       if (a.status === 'uebergeben') h += '<div class="auf-klein">Das CRM ' + _esc(d.takt || 'prüft automatisch') + (ab.zuletzt ? ' · zuletzt ' + _esc(ab.zuletzt) : '') + '. Rückfrage und Ergebnis erscheinen von selbst.</div>';
     }}
     if (a.status === 'rueckfrage') {{
-      h += '<div class="auf-rueck">' + _esc(a.rueckfrage || '') + '</div>';
-      h += '<label class="auf-label" for="auf-antwort">Deine Antwort</label><textarea id="auf-antwort" rows="2"></textarea>';
-      h += '<button type="button" class="btn btn-primary" data-art="antwort" onclick="aufFolge(this.dataset.art)">Antwort an ACOS senden</button>';
+      // 25.11.2026: Antwort als Auswahl (eine Option, Ergaenzung optional) oder freier Text
+      const opt = a.optionen || [];
+      h += '<div class="auf-rueck">' + _esc(opt.length ? (a.frage || a.rueckfrage || '') : (a.rueckfrage || '')) + '</div>';
+      if (opt.length) {{
+        h += '<div class="auf-opts" role="radiogroup" aria-label="Antwort auf die Rückfrage">'
+          + opt.concat([{{key: 'X', text: 'Andere Antwort'}}]).map(o => '<label class="auf-opt"><span class="auf-opt-k"><input type="radio" name="auf-opt" value="' + _esc(o.key) + '" onchange="aufOptWahl()"> '
+            + (o.key === 'X' ? '' : '<b>' + _esc(o.key) + ')</b> ') + _esc(o.text) + '</span>'
+            + '<textarea class="auf-opt-t" rows="2" placeholder="' + (o.key === 'X' ? 'Deine Antwort' : 'Ergänzung (optional)') + '"></textarea></label>').join('')
+          + '</div>';
+      }} else {{
+        h += '<label class="auf-label" for="auf-antwort">Deine Antwort</label><textarea id="auf-antwort" rows="2"></textarea>';
+      }}
+      h += '<button type="button" class="btn btn-primary" data-art="antwort" onclick="aufFolge(this.dataset.art, this)">Antwort an ACOS senden</button> ';
+    }}
+    if (a.status === 'uebergeben' || a.status === 'rueckfrage') {{
+      h += '<button type="button" class="btn btn-ghost" onclick="aufZurueckziehen(this)">Auftrag zurückziehen</button>';
     }}
     if (a.status === 'bearbeitet' || a.status === 'erledigt') {{
       h += '<div class="auf-ergebnis">' + _esc(a.ergebnis_name || 'Ergebnis') + '<div class="auf-links">'
@@ -5577,7 +5611,9 @@ function aufZeichnen() {{
     }}
   }}
   if (!lauf) {{
-    if (a && a.status === 'fehler') h += '<div class="auf-rueck">' + _esc(a.auftrags_id) + ': ' + _esc(a.meldung || 'Fehler bei der Bearbeitung') + '</div>';
+    if (a && a.status === 'fehler') h += '<div class="auf-rueck">' + _esc(a.auftrags_id) + ': ' + _esc(a.meldung || 'Fehler bei der Bearbeitung') + '</div>'
+      + '<button type="button" class="btn btn-ghost" onclick="aufZurueckziehen(this)">Auftrag beenden</button>';
+    if (a && a.status === 'zurueckgezogen') h += '<div class="auf-klein">' + _esc(a.auftrags_id) + ' zurückgezogen' + (a.zurueckgezogen_am ? ' am ' + _esc(a.zurueckgezogen_am) : '') + '. ' + _esc(a.meldung || '') + '</div>';
     if (d.verfuegbar) {{
       h += '<label class="auf-schalter"><input type="checkbox" id="auf-an" onchange="aufSchalter(this.checked)"> '
         + (a && a.status === 'erledigt' ? 'Erneut von ACOS bearbeiten lassen' : 'Von ACOS bearbeiten lassen') + '</label>';
@@ -5649,11 +5685,36 @@ function _aufNeuGeladen(d) {{
   _AUF.d = d; _AUF.an = false; aufZeichnen();
   if (d.task_status) document.getElementById('t-status').value = d.task_status;
 }}
-function aufFolge(art) {{
-  const feld = document.getElementById(art === 'antwort' ? 'auf-antwort' : 'auf-nachbessern'), text = feld.value.trim();
-  if (!text) {{ _aufFehlerZeigen(art === 'antwort' ? 'Bitte die Rückfrage beantworten.' : 'Bitte beschreiben, was nachgebessert werden soll.'); return; }}
-  const b = {{}}; b[art] = text;
-  api('POST', '/api/tasks/' + encodeURIComponent(_AUF.taskId) + '/auftrag', b).then(_aufNeuGeladen).catch(_aufFehlerZeigen);
+function aufOptWahl() {{
+  document.querySelectorAll('.auf-opt').forEach(l => l.classList.toggle('an', l.querySelector('input').checked));
+  const f = document.getElementById('auf-fehler'); if (f) f.textContent = '';
+  const an = document.querySelector('.auf-opt.an .auf-opt-t'); if (an) an.focus();
+}}
+function aufFolge(art, btn) {{
+  const b = {{}};
+  if (art === 'antwort' && document.querySelector('.auf-opts')) {{
+    const r = document.querySelector('input[name=auf-opt]:checked');
+    if (!r) {{ _aufFehlerZeigen('Bitte eine Antwort auswählen.'); return; }}
+    const t = r.closest('.auf-opt').querySelector('.auf-opt-t').value.trim();
+    if (r.value === 'X') {{
+      if (!t) {{ _aufFehlerZeigen('Bitte die Antwort eintragen.'); return; }}
+      b.antwort = t;
+    }} else {{ b.antwort_option = r.value; b.ergaenzung = t; }}
+  }} else {{
+    const feld = document.getElementById(art === 'antwort' ? 'auf-antwort' : 'auf-nachbessern'), text = feld.value.trim();
+    if (!text) {{ _aufFehlerZeigen(art === 'antwort' ? 'Bitte die Rückfrage beantworten.' : 'Bitte beschreiben, was nachgebessert werden soll.'); return; }}
+    b[art] = text;
+  }}
+  if (btn) btn.disabled = true;
+  api('POST', '/api/tasks/' + encodeURIComponent(_AUF.taskId) + '/auftrag', b).then(_aufNeuGeladen)
+    .catch(e => {{ if (btn) btn.disabled = false; _aufFehlerZeigen(e); }});
+}}
+function aufZurueckziehen(btn) {{
+  if (!confirm('Auftrag zurückziehen? ACOS bearbeitet ihn dann nicht mehr, die Aufgabe ist wieder frei. In ACOS wird nichts gelöscht.')) return;
+  btn.disabled = true;
+  api('POST', '/api/tasks/' + encodeURIComponent(_AUF.taskId) + '/auftrag-zurueckziehen', {{ auftrags_id: (_AUF.d && _AUF.d.aktiv) ? _AUF.d.aktiv.auftrags_id : null }})
+    .then(d => {{ _aufNeuGeladen(d); acosMeldungenLaden(); }})
+    .catch(e => {{ btn.disabled = false; _aufFehlerZeigen(e); }});
 }}
 function aufAbschliessen(btn) {{
   btn.disabled = true;
@@ -5741,7 +5802,12 @@ function saveTask() {{
   }}
   const method = id ? 'PUT' : 'POST';
   const path   = id ? '/api/tasks/'+id : '/api/tasks';
-  const fertig = () => {{ flash('t-ok','t-err',true); setTimeout(()=>reloadKeepPanel(),800); }};
+  // Doppelklick-Schutz (25.11.2026): Speichern sperrt sich, bis die Antwort da ist
+  const sb = document.getElementById('t-save-btn');
+  if (sb && sb.disabled) return;
+  if (sb) sb.disabled = true;
+  const frei = () => {{ if (sb) sb.disabled = false; }};
+  const fertig = () => {{ flash('t-ok','t-err',true); setTimeout(()=>{{ frei(); reloadKeepPanel(); }},800); }};
   api(method, path, body)
     .then(r => {{
       const tid = id || (r && r.taskId);
@@ -5750,9 +5816,9 @@ function saveTask() {{
       _AUF.taskId = tid;
       return api('POST', '/api/tasks/' + encodeURIComponent(tid) + '/auftrag', _aufBody())
         .then(fertig)
-        .catch(e => {{ flash('t-ok','t-err',false); _aufFehlerZeigen(e); }});
+        .catch(e => {{ frei(); flash('t-ok','t-err',false); _aufFehlerZeigen(e); }});
     }})
-    .catch(e => {{ flash('t-ok','t-err',false); const m = _aufFehlerText(e); if (m && m.length < 400 && m.indexOf('Traceback') < 0) alert(m); }});
+    .catch(e => {{ frei(); flash('t-ok','t-err',false); const m = _aufFehlerText(e); if (m && m.length < 400 && m.indexOf('Traceback') < 0) alert(m); }});
 }}
 function deleteTask() {{
   if(!confirm('Aufgabe wirklich löschen?')) return;
@@ -7283,6 +7349,11 @@ def delete_task(task_id):
     row = _q1("SELECT id FROM tasks WHERE task_id=%s", (task_id,))
     if not row:
         return
+    try:
+        import acos_auftraege   # laufende ACOS-Auftraege nicht verwaisen lassen (25.11.2026)
+        acos_auftraege.bei_aufgabe_geloescht(task_id)
+    except Exception:
+        pass
     _x("DELETE FROM tasks WHERE task_id=%s", (task_id,))
     _audit("tasks", row["id"], "delete")
 
@@ -7659,7 +7730,7 @@ def load_acos_firma(firma_id):
         arte = _q("""SELECT id, quelle, titel, art, acos_projekt, acos_link, nextcloud_pfad, status, meldung,
                             to_char(coalesce(acos_geaendert_am, acos_erstellt_am, erstmals_gesehen)
                                     AT TIME ZONE 'Europe/Berlin', 'YYYY-MM-DD') AS stand
-                     FROM acos_artefakte WHERE firma_id=%s
+                     FROM acos_artefakte WHERE firma_id=%s AND status <> 'entfernt'   -- ACOS fuehrt (25.11.2026)
                      ORDER BY coalesce(acos_geaendert_am, acos_erstellt_am, erstmals_gesehen) DESC, id DESC""", (f["id"],))
     except Exception:
         return {"eingerichtet": False, "grund": "Datenbank noch nicht vorbereitet (Migration 006 fehlt)"}
@@ -10549,7 +10620,8 @@ def acos_streifen():
         out.append({"auftrags_id": r["auftrags_id"], "taskId": r["task_id"], "status": r["status"],
                     "typ": acos_auftraege.typ_titel(r["artefakttyp"]), "firma": r["firma"] or "",
                     "firmaId": str(r["fid"] or ""), "aufgabe": r["aufgabe"] or "", "seit": seit_text,
-                    "frage": (r["rueckfrage"] or "") if r["status"] == "rueckfrage" else ""})
+                    "frage": acos_auftraege.frage_ohne_optionen(r["rueckfrage"], acos_auftraege.optionen_aus_text(r["rueckfrage"]))
+                             if r["status"] == "rueckfrage" and r["rueckfrage"] else ""})
     return out
 
 def heute_start_view():
@@ -10790,7 +10862,8 @@ def _kw_acos_dokumente(firma_id, wurzeln=None, q=None):
                               AT TIME ZONE 'Europe/Berlin')::date AS datum
                       FROM acos_artefakte a
                       LEFT JOIN acos_verknuepfung v ON v.firma_id = a.firma_id
-                      WHERE a.firma_id=%s AND a.art='document' AND a.status <> 'entfernt'{bed}
+                      WHERE a.firma_id=%s AND a.art='document' AND a.status <> 'entfernt'
+                        AND coalesce(a.nextcloud_pfad, '') NOT LIKE '%%/ACOS/Dokumente/%%'{bed}
                       ORDER BY datum DESC NULLS LAST, a.id DESC LIMIT 200""", args)
     except Exception:
         return []   # Migration 006 fehlt - dann eben keine ACOS-Dokumente

@@ -19,6 +19,7 @@ Nextcloud: nur lesen (Kundenordner-Pruefung). ACOS: nur das Auftragsobjekt wird 
 
 import json
 import re
+import threading
 from datetime import datetime, date
 from pathlib import Path
 
@@ -41,6 +42,7 @@ STATUS_TEXT = {
     "erledigt": "abgeschlossen",
     "fehler": "Fehler",
     "ersetzt": "ersetzt",
+    "zurueckgezogen": "zurückgezogen",
 }
 STUFE = {"uebergeben": 2, "rueckfrage": 2, "bearbeitet": 3, "erledigt": 4}
 AUFTRAG_ART, RUECKFRAGE_ART = "crm_auftrag", "crm_rueckfrage"
@@ -235,9 +237,41 @@ def status_gesperrt(task_id):
     return a if a and a["status"] in OFFEN else None
 
 
+_OPT_RE = re.compile(r"(?:^|[\s:;.(])([A-F])\)\s+")
+
+def optionen_aus_text(text):
+    """Antwortmoeglichkeiten 'A) ... B) ...' aus einem Rueckfragetext (fuer Rueckfragen ohne data.optionen)."""
+    text = str(text or "")
+    treffer = list(_OPT_RE.finditer(text))
+    if len(treffer) < 2 or treffer[0].group(1) != "A":
+        return []
+    aus = []
+    for i, m in enumerate(treffer):
+        if m.group(1) != "ABCDEF"[i]:
+            break
+        ende = treffer[i + 1].start(1) if i + 1 < len(treffer) else len(text)
+        t = text[m.end():ende].strip().rstrip(";,").strip()
+        t = re.sub(r"\s*(oder|bzw\.)$", "", t).strip().rstrip(";,").strip()
+        if t:
+            aus.append({"key": m.group(1), "text": t[:500]})
+    return aus if len(aus) >= 2 else []
+
+def frage_ohne_optionen(text, optionen):
+    """Fragetext ohne den Optionsteil, damit die Maske die Optionen nicht doppelt zeigt."""
+    text = str(text or "")
+    if not optionen:
+        return text
+    m = _OPT_RE.search(text)
+    kopf = text[:m.start(1)].strip() if m else text
+    return re.sub(r"\s*(Bitte wählen|Bitte auswählen)[:.]?\s*$", "", kopf).strip() or text
+
 def _auftrag_dict(r):
     r = dict(r)
-    for k in ("angelegt_am", "uebergeben_am", "bearbeitet_am", "erledigt_am", "geaendert_am"):
+    if r.get("status") == "rueckfrage":
+        opt = r.get("rueckfrage_optionen") or optionen_aus_text(r.get("rueckfrage"))
+        r["optionen"] = opt
+        r["frage"] = frage_ohne_optionen(r.get("rueckfrage"), opt)
+    for k in ("angelegt_am", "uebergeben_am", "bearbeitet_am", "erledigt_am", "geaendert_am", "zurueckgezogen_am"):
         if r.get(k):
             r[k] = r[k].astimezone().strftime("%d.%m.%Y %H:%M")
     r["status_text"] = STATUS_TEXT.get(r["status"], r["status"])
@@ -332,7 +366,37 @@ def vorpruefung(task_id):
     return vorpruefung_firma(t["firma_id"])
 
 
+_SPERREN, _SPERREN_LOCK = {}, threading.Lock()
+
 def uebergeben(task_id, body, username=None):
+    """Doppelklick-Schutz (25.11.2026, Fall AUF-2026-0012/0013: zwei Auftraege, alle Dateien doppelt in ACOS):
+    je Aufgabe nur eine Uebergabe gleichzeitig. Die zweite Anfrage scheitert sofort; kommt sie spaeter,
+    lehnt _uebergeben sie ab, weil der erste Auftrag noch bei ACOS liegt."""
+    with _SPERREN_LOCK:
+        sperre = _SPERREN.setdefault(str(task_id), threading.Lock())
+    if not sperre.acquire(blocking=False):
+        raise ValueError("Die Übergabe läuft bereits. Bitte einen Moment warten.")
+    try:
+        return _uebergeben(task_id, body, username)
+    finally:
+        sperre.release()
+
+
+def antwort_text(akt, body):
+    """Antwort auf eine Rueckfrage: gewaehlte Option im Wortlaut plus Ergaenzung, oder freier Text."""
+    frei = (body.get("antwort") or "").strip()
+    key = (body.get("antwort_option") or "").strip().upper()
+    erg = (body.get("ergaenzung") or "").strip()
+    if not key:
+        return frei
+    opt = (akt or {}).get("rueckfrage_optionen") or optionen_aus_text((akt or {}).get("rueckfrage"))
+    o = next((x for x in opt if x["key"] == key), None)
+    if not o:
+        raise ValueError("Diese Antwortmöglichkeit gibt es nicht (mehr). Bitte die Aufgabe neu laden.")
+    return f"{o['key']}) {o['text']}" + (f". Ergänzung: {erg}" if erg else "")
+
+
+def _uebergeben(task_id, body, username=None):
     """Auftrag anlegen und die Auftragsdatei in der Nextcloud ablegen.
     body: typ, thema, hinweise, dateien_senden; bei Rueckfrage 'antwort', zum Nachbessern 'nachbessern'
     (dann werden Typ und Thema vom laufenden Auftrag uebernommen und er wird ersetzt)."""
@@ -347,6 +411,8 @@ def uebergeben(task_id, body, username=None):
         raise ValueError("Das Unternehmen ist noch nicht mit einem ACOS-Mandanten verknüpft.")
 
     akt = aktiver_auftrag(task_id)
+    if body.get("antwort_option") or body.get("antwort"):
+        body = dict(body, antwort=antwort_text(akt, body))
     folge = (body.get("antwort") or body.get("nachbessern") or "").strip()
     if akt and akt["status"] == "uebergeben" and not body.get("ersetzen"):
         raise ValueError(f"{akt['auftrags_id']} liegt noch bei ACOS. Bitte erst das Ergebnis oder die Rückfrage abwarten.")
@@ -366,7 +432,10 @@ def uebergeben(task_id, body, username=None):
     hinweise = (body.get("hinweise") or "").strip()
     if folge:
         art = "Antwort auf die Rückfrage" if body.get("antwort") else "Nachbesserung"
-        hinweise = (f"{art} zu {ersetzt['auftrags_id']}: {folge}" if ersetzt else folge) + (f"\n{hinweise}" if hinweise else "")
+        frage = ""
+        if ersetzt and body.get("antwort") and ersetzt.get("rueckfrage"):
+            frage = " (Frage: „" + " ".join(str(ersetzt["rueckfrage"]).split())[:900] + "“)"
+        hinweise = (f"{art} zu {ersetzt['auftrags_id']}{frage}: {folge}" if ersetzt else folge) + (f"\n{hinweise}" if hinweise else "")
     hinweise = hinweise[:2000]
     _klartext_pruefen(thema + " " + hinweise, t["firma"])
     if not _modus_scharf():
@@ -438,6 +507,130 @@ def abschliessen(task_id, username=None):
     return auftraege_zu_aufgabe(task_id)
 
 
+ZURUECKZIEHBAR = ("uebergeben", "rueckfrage", "fehler")
+
+def _beenden(a, text, username=None, quelle="crm"):
+    """Auftrag beenden ohne Ergebnis: Status zurueckgezogen, Aufgabe wieder frei (Offen).
+    Alte Meldungen gelten als gesehen; kommt der Anstoss aus ACOS, gibt es eine neue Meldung dazu."""
+    core._x("""UPDATE acos_auftraege SET status='zurueckgezogen', zurueckgezogen_am=now(), geaendert_am=now(), meldung=%s
+               WHERE id=%s""", (text[:300], a["id"]))
+    if core._spalte_da("acos_auftrag_verlauf", "gesehen_am"):
+        core._x("UPDATE acos_auftrag_verlauf SET gesehen_am=now() WHERE task_id=%s AND gesehen_am IS NULL", (a["task_id"],))
+    _verlauf(a["task_id"], a["auftrags_id"], "zurueckgezogen", text)
+    if quelle == "crm" and core._spalte_da("acos_auftrag_verlauf", "gesehen_am"):
+        core._x("UPDATE acos_auftrag_verlauf SET gesehen_am=now() WHERE auftrags_id=%s AND gesehen_am IS NULL", (a["auftrags_id"],))
+    # Aufgabe nur freigeben, wenn kein anderer Auftrag an ihr noch laeuft
+    if not core._q1("""SELECT 1 FROM acos_auftraege WHERE task_id=%s AND id <> %s AND status IN ('uebergeben','rueckfrage','bearbeitet')""",
+                    (a["task_id"], a["id"])):
+        _task_status(a["task_id"], "Offen")
+    _journal(a["firma_id"], f"ACOS-Auftrag {a['auftrags_id']} beendet", f"{text} Aufgabe {a['task_id']} ist wieder offen.",
+             {"auftrags_id": a["auftrags_id"], "task_id": a["task_id"], "quelle": quelle})
+
+
+def zurueckziehen(task_id, username=None, auftrags_id=None):
+    """'Auftrag zurückziehen' (25.11.2026). In ACOS wird nichts geloescht: liegt der Auftrag noch unbearbeitet dort,
+    legt das CRM ein Objekt 'Zurückgezogen <ID>' (Art crm_rueckfrage, status zurueckgezogen) an - die geplante
+    Aufgabe ueberspringt jeden Auftrag, zu dem es so ein Objekt gibt."""
+    aufgabe_da = bool(core._q1("SELECT 1 FROM tasks WHERE task_id=%s", (task_id,)))
+    if not aufgabe_da and not auftrags_id:
+        _aufgabe(task_id)   # -> "Aufgabe nicht gefunden"
+    if auftrags_id:
+        # genau dieser Auftrag (ACOS-Streifen): auch wenn die Aufgabe noch einen juengeren hat (Fall 0012/0014)
+        # oder die Aufgabe inzwischen geloescht ist (Fall 0009/PROJ-056)
+        a = core._q1("SELECT * FROM acos_auftraege WHERE auftrags_id=%s AND task_id=%s", (str(auftrags_id), task_id))
+        if not a or a["status"] not in ZURUECKZIEHBAR:
+            raise ValueError(f"{auftrags_id} lässt sich nicht (mehr) zurückziehen.")
+    else:
+        a = aktiver_auftrag(task_id)
+        if not a or a["status"] not in ZURUECKZIEHBAR:
+            raise ValueError("Zu dieser Aufgabe läuft kein Auftrag, der sich zurückziehen lässt.")
+    hinweis = ""
+    if a["status"] == "uebergeben":
+        try:
+            _mcp().aendern("am_acos_knowledge_save", {
+                "client_id": a["acos_client_id"], "kind": RUECKFRAGE_ART, "title": f"Zurückgezogen {a['auftrags_id']}",
+                "source": "CRM Digitale Konzepte, Auftrag zurückgezogen",
+                "data": {"auftrags_id": a["auftrags_id"], "status": "zurueckgezogen",
+                         "text": "Auftrag im CRM zurückgezogen – bitte nicht mehr bearbeiten."}})
+        except Exception as e:  # noqa: BLE001
+            hinweis = f" ACOS war nicht erreichbar ({e.__class__.__name__}); kommt trotzdem ein Ergebnis, landet es nur im Kundenwissen."
+    _beenden(a, f"Auftrag im CRM zurückgezogen{f' ({username})' if username else ''}.{hinweis}", username)
+    core._audit("acos_auftraege", a["firma_id"], "zurueckgezogen", neu={"auftrags_id": a["auftrags_id"], "task_id": task_id})
+    return auftraege_zu_aufgabe(task_id) if aufgabe_da else {"ok": True, "aktiv": None, "verlauf": []}
+
+
+def bei_aufgabe_geloescht(task_id, username=None):
+    """Vor dem Loeschen einer Aufgabe (crm_core.delete_task): laufende Auftraege zurueckziehen,
+    damit sie nicht verwaist auf 'Heute' stehen bleiben (Fall 0009/PROJ-056)."""
+    if not core._tabelle_da("acos_auftraege"):
+        return 0
+    n = 0
+    for a in core._q("SELECT auftrags_id FROM acos_auftraege WHERE task_id=%s AND status = ANY(%s)", (task_id, list(ZURUECKZIEHBAR))):
+        try:
+            zurueckziehen(task_id, username, a["auftrags_id"])
+            n += 1
+        except Exception:  # noqa: BLE001 - Loeschen der Aufgabe darf daran nicht scheitern
+            pass
+    return n
+
+
+def _acos_fuehrt(notiz, mcp):
+    """ACOS fuehrt (25.11.2026): Was dort geloescht oder archiviert ist, bleibt im CRM nicht stehen.
+    - Auftragsobjekt weg (uebergeben/Rueckfrage/Fehler) -> Auftrag beendet, Aufgabe frei.
+    - Rueckfrage-Objekt weg (Status Rueckfrage) -> zurueck auf 'uebergeben', ACOS bearbeitet erneut.
+    Nur wenn die Liste vollstaendig gelesen werden konnte; bei jedem Lesefehler bleibt alles, wie es ist."""
+    n = 0
+    # Aufgabe im CRM geloescht, Auftrag laeuft noch: beenden (geht ohne ACOS)
+    for a in core._q("""SELECT a.* FROM acos_auftraege a WHERE a.status IN ('uebergeben','rueckfrage','fehler')
+                        AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = a.task_id)"""):
+        _beenden(a, "Aufgabe im CRM gelöscht – Auftrag beendet.", quelle="crm")
+        notiz("Aufträge", "hinweis", f"{a['auftrags_id']}: Aufgabe gelöscht, Auftrag beendet")
+        n += 1
+    if mcp is None:
+        return n
+    import acos_sync
+    offene = core._q("SELECT * FROM acos_auftraege WHERE status IN ('uebergeben','rueckfrage','fehler') AND uebergeben_am IS NOT NULL")
+    for cid in sorted({a["acos_client_id"] for a in offene}):
+        try:
+            roh_a = mcp.lesen("am_acos_knowledge_list", {"client_id": cid, "kind": AUFTRAG_ART, "limit": 200})
+            roh_r = mcp.lesen("am_acos_knowledge_list", {"client_id": cid, "kind": RUECKFRAGE_ART, "limit": 200})
+        except Exception as e:  # noqa: BLE001
+            notiz("Aufträge", "hinweis", f"Abgleich gelöschter Aufträge übersprungen ({e.__class__.__name__})")
+            continue
+        if any(isinstance(x, dict) and x.get("truncated") for x in (roh_a, roh_r)):
+            continue
+        auftr = acos_sync._liste(roh_a)
+        rueck = acos_sync._liste(roh_r)
+        ids = {str(o.get("id") or "") for o in auftr}
+        titel_a = " ".join(str(o.get("title") or o.get("titel") or "") for o in auftr)
+        titel_r = " ".join(str(o.get("title") or o.get("titel") or "") for o in rueck)
+        for a in [x for x in offene if x["acos_client_id"] == cid]:
+            da = (a["auftrag_objekt_id"] in ids) if a.get("auftrag_objekt_id") else (a["auftrags_id"] in titel_a)
+            if not da:
+                _beenden(a, "Auftrag in ACOS gelöscht oder archiviert – im CRM beendet.", quelle="acos")
+                notiz("Aufträge", "hinweis", f"{a['auftrags_id']}: in ACOS entfernt, im CRM beendet")
+                n += 1
+            elif a["status"] == "rueckfrage" and a["auftrags_id"] not in titel_r:
+                core._x("UPDATE acos_auftraege SET status='uebergeben', rueckfrage=NULL, geaendert_am=now() WHERE id=%s", (a["id"],))
+                if core._spalte_da("acos_auftraege", "rueckfrage_optionen"):
+                    core._x("UPDATE acos_auftraege SET rueckfrage_optionen=NULL WHERE id=%s", (a["id"],))
+                if core._spalte_da("acos_auftrag_verlauf", "gesehen_am"):
+                    core._x("""UPDATE acos_auftrag_verlauf SET gesehen_am=now() WHERE auftrags_id=%s AND art='rueckfrage'
+                               AND gesehen_am IS NULL""", (a["auftrags_id"],))
+                _verlauf(a["task_id"], a["auftrags_id"], "uebergeben", "Rückfrage in ACOS entfernt – ACOS bearbeitet den Auftrag erneut.")
+                _task_status(a["task_id"], "In Bearbeitung")
+                notiz("Aufträge", "hinweis", f"{a['auftrags_id']}: Rückfrage in ACOS entfernt")
+                n += 1
+    # Ergebnis in ACOS geloescht/archiviert: Verweis im Auftrag entfernen
+    for a in core._q("""SELECT a.* FROM acos_auftraege a JOIN acos_artefakte x ON x.acos_id = a.acos_artefakt_id
+                        WHERE a.status IN ('bearbeitet','erledigt') AND x.status = 'entfernt' AND a.acos_link IS NOT NULL"""):
+        core._x("UPDATE acos_auftraege SET acos_link=NULL, meldung=%s, geaendert_am=now() WHERE id=%s",
+                ("Ergebnis in ACOS gelöscht oder archiviert; die Kopie liegt unter ACOS/Wissen/archiviert.", a["id"]))
+        _verlauf(a["task_id"], a["auftrags_id"], "hinweis", "Ergebnis in ACOS gelöscht oder archiviert – Kopie in der Nextcloud unter ACOS/Wissen/archiviert.")
+        n += 1
+    return n
+
+
 def etiketten(task_ids):
     """Fuer Listen: task_id -> Status des aktiven Auftrags (nur laufende)."""
     if not task_ids or not core._tabelle_da("acos_auftraege"):
@@ -473,12 +666,21 @@ def _rueckfragen(notiz, mcp):
                 continue
             status = d.get("status") or "rueckfrage"
             text = " ".join(str(d.get("text") or "").split())[:1500]
+            if status == "zurueckgezogen":
+                _beenden(a, "Auftrag zurückgezogen (Vermerk in ACOS).", quelle="acos")
+                n += 1
+                continue
             if status == "fehler":
                 core._x("UPDATE acos_auftraege SET status='fehler', meldung=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
                 _verlauf(a["task_id"], a["auftrags_id"], "fehler", f"ACOS konnte den Auftrag nicht bearbeiten: {text}")
                 _task_status(a["task_id"], "Offen")
             else:
                 core._x("UPDATE acos_auftraege SET status='rueckfrage', rueckfrage=%s, geaendert_am=now() WHERE id=%s", (text, a["id"]))
+                opt = [{"key": str(o.get("key") or "")[:3].upper(), "text": " ".join(str(o.get("text") or "").split())[:500]}
+                       for o in (d.get("optionen") or []) if isinstance(o, dict) and o.get("key") and o.get("text")]
+                if core._spalte_da("acos_auftraege", "rueckfrage_optionen"):
+                    core._x("UPDATE acos_auftraege SET rueckfrage_optionen=%s WHERE id=%s",
+                            (json.dumps(opt, ensure_ascii=False) if opt else None, a["id"]))
                 _verlauf(a["task_id"], a["auftrags_id"], "rueckfrage", f"Rückfrage von ACOS: {text}")
             n += 1
     return n
@@ -517,9 +719,9 @@ def _artefakte_zuordnen(notiz):
     return n
 
 
-MELDE_ARTEN = ("rueckfrage", "fehler", "in_acos", "bearbeitet")
+MELDE_ARTEN = ("rueckfrage", "fehler", "in_acos", "bearbeitet", "zurueckgezogen")
 MELDE_TITEL = {"rueckfrage": "Rückfrage von ACOS", "fehler": "ACOS: Fehler", "in_acos": "Ergebnis liegt in ACOS",
-               "bearbeitet": "In der Nextcloud abgelegt"}
+               "bearbeitet": "In der Nextcloud abgelegt", "zurueckgezogen": "Auftrag beendet"}
 
 def meldungen():
     """Ungesehene Meldungen zu Auftraegen (Migration 029) fuer Heute und die Einblendung."""
@@ -557,7 +759,12 @@ def nachlauf(notiz=lambda *a, **k: None, mcp=None):
     try:
         if not core._tabelle_da("acos_auftraege"):
             return {"rueckmeldungen": 0, "ergebnisse": 0}
-        return {"rueckmeldungen": _rueckfragen(notiz, mcp), "ergebnisse": _artefakte_zuordnen(notiz)}
+        rm = _rueckfragen(notiz, mcp)
+        try:
+            rm += _acos_fuehrt(notiz, mcp)
+        except Exception as e:  # noqa: BLE001
+            notiz("Aufträge", "fehler", f"Abgleich gelöschter Aufträge fehlgeschlagen ({e.__class__.__name__}: {e})"[:300])
+        return {"rueckmeldungen": rm, "ergebnisse": _artefakte_zuordnen(notiz)}
     except Exception as e:  # noqa: BLE001
         notiz("Aufträge", "fehler", f"Aufträge konnten nicht abgeglichen werden ({e.__class__.__name__}: {e})"[:300])
         return {"rueckmeldungen": 0, "ergebnisse": 0}

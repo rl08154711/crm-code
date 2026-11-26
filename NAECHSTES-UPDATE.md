@@ -586,3 +586,110 @@ Sandbox (crm_test, Migrationen 002–030, fiktive Daten): smoke grün, neu `test
 Sicherung: `/root/crm-code-vor-fokusband/`. Rückweg: beide Dateien zurück, chown, `systemctl restart crm`; die Tabelle aus 030 stört den alten Code nicht.
 
 **Live 2026-11-23:** Migration 030 eingespielt, Code eingespielt, von Ronald bestätigt.
+
+## 2026-11-25 – Geplant: ACOS-Abgleich erkennt Archivierung und direkt hochgeladene Dateien (umgesetzt im Release „ACOS führt“, s. unten)
+
+Anlass: Mandant M-15, 24./25.11.2026. Eine Gesprächsunterlage wurde aus dem Chat direkt in ACOS abgelegt, nicht über den CRM-Auftrag.
+
+1. **Archivierte Wissensobjekte:** Der Abgleich hat einen Bericht (`kind: report`, Quelle `ai:saveback`) als .md unter `ACOS/Wissen` abgelegt. Danach wurde der Bericht in ACOS archiviert und durch eine neue Fassung ersetzt. Die alte .md bleibt in der Nextcloud stehen und wird nicht als überholt erkannt.
+   Gewünscht: Der Abgleich prüft, ob bereits abgelegte Wissensobjekte in ACOS archiviert sind, und kennzeichnet die Datei (z. B. Umbenennen mit Präfix `ARCHIVIERT_` oder Verschieben nach `ACOS/Wissen/archiviert/`; nichts löschen). Neue Versionen desselben Objekts ebenfalls nachziehen.
+2. **Direkt in ACOS hochgeladene Dateien:** Dokumente (`kind: document`, Quelle `mcp`) ohne Nextcloud-Herkunft in der Beschreibung zeigt das CRM nur als „nur in ACOS“; sie kommen nicht in den Kundenordner.
+   Gewünscht: Diese Dateien beim Abgleich in den Kundenordner holen (z. B. `ACOS/Dokumente/`), ohne bestehende Dateien zu überschreiben, und danach als vorhanden erkennen, damit kein Duplikat zurück nach ACOS geht.
+
+Zu klären vor dem Bau: Ablageort im Kundenordner, ob Archiviertes umbenannt oder verschoben wird, ob die ACOS-Schnittstelle archivierte Objekte und den Dateiinhalt liefert. Fachlich freigegeben von Ronald am 25.11.2026.
+
+## 2026-11-25 – Geplant: ACOS-Auftrag zurückziehen, Doppelklick-Schutz, Altlasten 0009/0012/0014 (umgesetzt im Release „ACOS führt“, s. unten)
+
+Anlass: Auf „Heute“ stehen drei Rückfragen (AUF-2026-0009, -0012, -0014), die fachlich überholt sind. 0012/0014 gehören zu M-15:
+die Gesprächsunterlage ist inzwischen direkt in ACOS entstanden. 0009 gehört zum Test-Mandanten (seit 18.11. offen).
+In ACOS liegen die drei Rückfragen unbeantwortet vor; ACOS selbst kennt dafür keinen Status.
+
+1. **Sofortbereinigung (mit dem Release, per SQL auf dem Server):** 0009, 0012, 0014 auf `erledigt` setzen, Verlauf
+   „Auftrag zurückgezogen (überholt)“, Meldungen als gesehen. In ACOS nichts löschen.
+2. **„Auftrag zurückziehen“** im Aufgabenfenster und im ACOS-Streifen auf „Heute“ für Aufträge in „übergeben“, „Rückfrage“
+   und „Fehler“: Auftrag wird abgeschlossen (Verlauf „zurückgezogen“, Journal), die Aufgabe ist danach wieder frei
+   (bisher sperrt ein offener Auftrag den Aufgabenstatus, Ausweg war nur Beantworten → Folgeauftrag).
+   Zu klären: eigener Status `zurueckgezogen` (Migration, CHECK erweitern) oder `erledigt` mit Verlaufsart; ob im
+   ACOS-Auftragsobjekt ein Vermerk landen soll, damit die geplante Aufgabe ihn sicher überspringt (Lesen genügt heute:
+   eine vorhandene Rückfrage zählt dort schon als erledigt).
+3. **Doppelklick-Schutz beim Übergeben:** Am 23.11. entstanden 0012 und 0013 im Abstand von 2 Sekunden; alle Kundendateien
+   liegen dadurch doppelt in der ACOS-Akte von M-15. Gewünscht: Knopf sofort sperren und serverseitig ablehnen, wenn für
+   dieselbe Aufgabe in den letzten 60 Sekunden schon ein Auftrag angelegt wurde. Die doppelten Dateien räumt Ronald in ACOS auf.
+
+Zum Nachsehen dabei: Die Rückfrage zu 0013, auf die mit „A)“ geantwortet wurde (→ 0014), ist in ACOS nicht mehr vorhanden;
+0012/0014 wurden erst am 25.11. 12:21 bearbeitet statt am 23.11. abends. Ursache offen (Läufe der geplanten Aufgabe prüfen).
+Fachlich freigegeben von Ronald am 25.11.2026.
+
+**Härtung (Vorgabe Ronald, 25.11.2026): ACOS führt.** Was in ACOS gelöscht oder archiviert ist, darf im CRM nicht stehen bleiben –
+weder als offener Auftrag noch als Rückfrage, Meldung, Kundenwissen-Eintrag oder Verweis. Der Abgleich gleicht dafür
+Aufträge, Rückfragen und Wissensobjekte aktiv gegen ACOS ab (nicht nur „neu dazu“). Betrifft auch den Abschnitt
+„ACOS-Abgleich erkennt Archivierung“ oben. Nextcloud-Kopien (entschieden 25.11.2026): nicht löschen, sondern nach
+`<Kunde>/ACOS/Wissen/archiviert/` verschieben; die Regel „Nextcloud nur lesen oder neu anlegen“ bekommt dafür diese eine Ausnahme.
+
+**Rückfrage beantworten als Auswahl (Wunsch Ronald, 25.11.2026):** Statt Freitext eine Option je Antwort (Radio, eine Wahl),
+unter der gewählten Option ein Ergänzungsfeld (optional), dazu immer „Andere Antwort“ mit Pflicht-Freitext.
+Quelle der Optionen: neues Feld `data.optionen` [{"key": "A", "text": "…"}] im ACOS-Objekt `crm_rueckfrage` (Prompt der geplanten
+Aufgabe anpassen); für alte Rückfragen Erkennung von „A) … B) …“ im Fragetext. An ACOS geht der volle Text, nicht nur „A)“:
+„Antwort auf Rückfrage <ID> (‚<Frage>‘): A) <Optionstext>. Ergänzung: …“ – damit die Antwort auch ohne die alte Rückfrage
+zuzuordnen ist (Fall 0013/0014). Knopf „Auftrag zurückziehen“ steht in derselben Maske.
+
+## 2026-11-25 – Release „ACOS führt“: Zurückziehen, Auswahl-Antwort, Doppelklick-Schutz, Archivierung (Migration 031, live 2026-11-25)
+
+| Punkt | Umsetzung |
+|---|---|
+| Zurückziehen | Knopf „Auftrag zurückziehen“ im Aufgabenfenster (übergeben, Rückfrage; bei Fehler „Auftrag beenden“) und × im ACOS-Streifen auf „Heute“, jeweils mit Rückfrage. Status `zurueckgezogen` (Migration 031), Aufgabe wieder „Offen“ und frei, Verlauf und Journal. In ACOS wird nichts gelöscht: liegt der Auftrag noch unbearbeitet dort, legt das CRM ein Objekt „Zurückgezogen <ID>“ (Art crm_rueckfrage, status zurueckgezogen) an – die geplante Aufgabe überspringt jeden Auftrag mit so einem Objekt. |
+| Doppelklick | Speichern im Aufgabenfenster und „Anlegen“ in der Akte sperren sich bis zur Antwort (auch Doppel-Enter). Serverseitig je Aufgabe nur eine Übergabe gleichzeitig; eine spätere zweite scheitert an „liegt noch bei ACOS“. (Die 60-Sekunden-Regel aus der Planung ist damit nicht nötig.) |
+| Antwort als Auswahl | Rückfrage mit Optionen: je Option ein Auswahlknopf, unter der gewählten ein Ergänzungsfeld, dazu „Andere Antwort“ (Text Pflicht). Optionen aus `data.optionen` des ACOS-Objekts (Spalte `rueckfrage_optionen`), sonst aus „A) … B) …“ im Fragetext. An ACOS geht der volle Wortlaut mit der Frage: „Antwort auf die Rückfrage zu <ID> (Frage: „…“): B) <Optionstext>. Ergänzung: …“. |
+| ACOS führt: Aufträge | Bei jedem Abgleich (auch der Minutentakt): Auftragsobjekt in ACOS gelöscht/archiviert → Auftrag im CRM beendet, Aufgabe frei, Meldung „Auftrag beendet“. Rückfrage-Objekt in ACOS gelöscht → Auftrag zurück auf „übergeben“, ACOS bearbeitet neu. Ergebnis in ACOS gelöscht → Link am Auftrag entfernt, Hinweis. Bei Lesefehlern oder abgeschnittenen Listen ändert sich nichts. |
+| ACOS führt: Wissen | In ACOS gelöschte/archivierte Wissensobjekte verschwinden aus der ACOS-Liste am Unternehmen und aus dem Kundenwissen; die Kopie in der Nextcloud wird nach `<Kunde>/ACOS/Wissen/archiviert/` verschoben (nie gelöscht, nie überschrieben, nur unter ACOS/Wissen und ACOS/Dokumente). Neue Fassung eines Objekts in ACOS (geändert > 1 Min.): alte Kopie nach archiviert, neue Kopie abgelegt, Auftrag zeigt auf die neue. `wissen_sync` übergeht `archiviert/`. |
+| Direkt hochgeladene Dokumente | ACOS liefert kein Original, nur Text (am_acos_file_read). Lesbares kommt als Textauszug nach `<Kunde>/ACOS/Dokumente/<Datum> <Titel>.md` (im Kundenwissen suchbar), Hinweis „Textauszug in der Nextcloud, Original in ACOS“. Ohne lesbaren Text (z. B. Bilder) bleibt der Verweis mit Hinweis „Kein Text lesbar“. Der Ordner ACOS/ wird nie zurück nach ACOS gesendet. |
+
+Altlasten 0009/0012/0014: nach dem Einspielen von Ronald per „Auftrag zurückziehen“ zu beenden (kein SQL nötig).
+Danach: Prompt der geplanten Aufgabe „ACOS-Aufträge abarbeiten (Server)“ um `data.optionen` ergänzen.
+
+Sandbox (crm_test, Migrationen 002–031, fiktive Daten): neu `test_acos_fuehrt.py` 43/43; smoke grün, 61, 33, 22, 14, 14, 11, 11, 19, 21;
+Browser 29/29, Auswahl-Antwort und Zurückziehen im Streifen durchgeklickt, keine JavaScript-Fehler.
+
+| Datei | live vorher | neu |
+|---|---|---|
+| crm_core.py | 2121e938… | 81cf51cc7992a3a196b9bb932a9f8ea66189788f |
+| crm_serve.py | 51932565… | a00cb0797153948ff50f871201e0de2b3f733bd3 |
+| acos_sync.py | e3aaa985… | 0eaed82161c1a33be443785ead55f1047d320634 |
+| acos_auftraege.py | d3c0d175… | 439608ded6195b23cd3722c510cc5e067e6a70f6 |
+| wissen_sync.py | 70321fd1… | 01b5c4b949ab369e26313547a6cbe4eb65f79efb |
+| migration_031_acos_fuehrt.sql | – | ea0378b3c5497f3438a2238372cfab4245c41757 |
+
+Sicherung: `/root/crm-code-vor-acos-fuehrt/`. Rückweg: Dateien zurück, chown, `systemctl restart crm`; Migration 031 stört den alten Code nicht
+(der alte Code kennt `zurueckgezogen` nicht, zeigt solche Aufträge aber nur als beendet).
+
+**Nachbesserung 25.11.2026 (nach dem Einspielen):** Das × im Streifen zog den jüngsten Auftrag der Aufgabe zurück, nicht den der Zeile.
+PROJ-066 trägt 0012 und 0014 (Doppelklick-Altfall), PROJ-054 einen alten Fehler (0001) neben einem erledigten Auftrag – dort kam
+„kein Auftrag, der sich zurückziehen lässt“. Jetzt: Zurückziehen mit Auftrags-ID (genau dieser Auftrag), Aufgabe wird nur frei, wenn
+kein anderer Auftrag an ihr läuft. Minutentakt prüft auch Unternehmen mit offener Rückfrage oder Fehler (Härtung greift dann in Minuten
+statt erst um 6:30). `test_acos_fuehrt.py` 49/49, alle übrigen grün.
+
+| Datei | live (Release 25.11.) | neu |
+|---|---|---|
+| crm_core.py | 81cf51cc… | eca1f0b000ede19335a6833d01bd3c13dedbab0d |
+| crm_serve.py | a00cb079… | 11368269fbbf71a6da2f4dcbcc37b672b6860bb5 |
+| acos_sync.py | 0eaed821… | 723b9b6b892b0e241c2df1f804a556de38e1bde1 |
+| acos_auftraege.py | 439608de… | 4338fbe8bc486df12e23947f6fef75df28376bc9 |
+
+**Nachbesserung 2 (25.11.2026):** 0009 hängt an PROJ-056, die Aufgabe ist gelöscht („Aufgabe nicht gefunden“). Jetzt: Zurückziehen mit
+Auftrags-ID geht auch ohne Aufgabe; „Aufgabe löschen“ zieht laufende Aufträge vorher zurück; verwaiste Aufträge beendet der Abgleich
+selbst. `test_acos_fuehrt.py` 53/53, alle übrigen grün. crm_core.py eca1f0b0… → 5f5d6def9806598610bf7c9ba52a072745ac2abc,
+acos_auftraege.py 4338fbe8… → 4690eb800453b175f8de838d6668d526ca9b9f57.
+
+**Live 2026-11-25:** Migration 031 und beide Nachbesserungen eingespielt (crm_core 5f5d6def…, acos_auftraege 4690eb80…,
+acos_sync 723b9b6b…, crm_serve 11368269…, wissen_sync 01b5c4b9…). 0009, 0012, 0014 hingen an gelöschten Aufgaben und wurden
+vom Abgleich beendet, 0001 von Hand zurückgezogen. Von Ronald bestätigt.
+
+Geplant (klein): Scheitert das × im ACOS-Streifen, den Streifen trotzdem neu laden, damit keine schon beendeten Aufträge stehen bleiben.
+
+## 2026-11-26 – Geplant: geplante Aufgabe „ACOS-Aufträge abarbeiten (Server)“ anpassen (offen, noch nicht umgesetzt)
+
+1. Rückfrage mit getrennten Antwortmöglichkeiten: `data.optionen` = [{"key": "A", "text": "…"}] zusätzlich zum Fragetext, damit die
+   Auswahlmaske im CRM nicht auf die Texterkennung „A) … B) …“ angewiesen ist.
+2. Vermerk „Zurückgezogen <Auftrags-ID>“ (Art crm_rueckfrage, status zurueckgezogen) ausdrücklich als erledigt nennen
+   (greift heute schon über Regel 2a, soll aber eindeutig im Prompt stehen).
+Rest des Prompts unverändert. Änderung erst mit Ronalds OK zum Release. Fachlich vorgemerkt von Ronald am 26.11.2026.

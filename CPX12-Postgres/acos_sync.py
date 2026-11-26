@@ -324,6 +324,11 @@ class Ablage:
             pass
 
 
+    def verschieben(self, rel, ziel):
+        """WebDAV MOVE ohne Ueberschreiben (nur fuer die eigenen Kopien unter ACOS/Wissen und ACOS/Dokumente)."""
+        with self.dav._req("MOVE", rel, {"Destination": self.dav._url(ziel), "Overwrite": "F"}, timeout=60):
+            pass
+
     def dateien(self, firma, tiefe=3):
         """Dateien im Kundenordner (ohne den Unterordner ACOS, der kommt aus ACOS)."""
         aus = []
@@ -528,6 +533,50 @@ def an_acos_senden(firma_id, pfad, username=None):
         return {"ok": False, "meldung": meldung}
 
 
+EIGENE_ORDNER = ("ACOS/Wissen/", "ACOS/Dokumente/")   # nur hier legt der Abgleich selbst Kopien an
+
+
+def archivieren(ablage, pfad_voll):
+    """ACOS fuehrt (25.11.2026): Kopie eines in ACOS geloeschten/archivierten oder neu gefassten Objekts nach
+    <Ordner>/archiviert/ verschieben - nie loeschen, nie ueberschreiben. Nur fuer Pfade unter ACOS/Wissen
+    und ACOS/Dokumente (Originale im Kundenordner bleiben unberuehrt). Rueckgabe: neuer voller Pfad oder None."""
+    basis = core.kunden_ablage_basis()
+    if not pfad_voll or not pfad_voll.startswith(basis + "/") or "/archiviert/" in pfad_voll:
+        return None
+    rel = pfad_voll[len(basis) + 1:]
+    if not any(f"/{o}" in "/" + rel for o in EIGENE_ORDNER):
+        return None
+    ordner, datei = rel.rsplit("/", 1)
+    if not ablage.gibt_es(rel):
+        core._x("DELETE FROM kundenwissen WHERE pfad=%s", (rel,))
+        return None
+    ziel_ordner = f"{ordner}/archiviert"
+    ablage.ordner(ziel_ordner)
+    stamm, punkt, endung = datei.rpartition(".")
+    ziel, nr = f"{ziel_ordner}/{datei}", 1
+    while ablage.gibt_es(ziel):
+        nr += 1
+        ziel = f"{ziel_ordner}/{stamm} ({nr}).{endung}" if punkt else f"{ziel_ordner}/{datei} ({nr})"
+    ablage.verschieben(rel, ziel)
+    core._x("DELETE FROM kundenwissen WHERE pfad=%s", (rel,))   # Kundenwissen zeigt Archiviertes nicht
+    return f"{basis}/{ziel}"
+
+
+def dokument_text(mcp, acos_id):
+    """Text eines ACOS-Dokuments (am_acos_file_read, seitenweise). Das Original liefert ACOS nicht."""
+    teile, offset = [], 0
+    for _ in range(40):
+        r = mcp.lesen("am_acos_file_read", {"document_id": acos_id, "offset": offset, "limit": 24000})
+        r = r if isinstance(r, dict) else {"text": str(r or "")}
+        stueck = str(_feld(r, "text", "content", "markdown") or "")
+        teile.append(stueck)
+        nxt = r.get("next_offset")
+        if nxt in (None, "", 0) or not stueck:
+            break
+        offset = int(nxt)
+    return "".join(teile).strip()
+
+
 def dateiname(datum, titel):
     t = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", titel or "Ohne Titel")
     t = re.sub(r"\s+", " ", t).strip(" .")[:120] or "Ohne Titel"
@@ -714,24 +763,64 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                     if not o["id"]:
                         continue
                     gesehen.append(o["id"])
+                    vorher = core._q1("""SELECT id, status, art, acos_geaendert_am, nextcloud_pfad FROM acos_artefakte
+                                         WHERE quelle='wissen' AND acos_id=%s""", (o["id"],))
                     r = core._x("""
                         INSERT INTO acos_artefakte (firma_id, quelle, acos_id, titel, art, acos_erstellt_am,
                                                     acos_geaendert_am, acos_projekt, acos_link)
                         VALUES (%s,'wissen',%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (quelle, acos_id) DO UPDATE SET zuletzt_gesehen = now(), firma_id = EXCLUDED.firma_id,
                             titel = EXCLUDED.titel, acos_projekt = EXCLUDED.acos_projekt,
+                            acos_geaendert_am = COALESCE(EXCLUDED.acos_geaendert_am, acos_artefakte.acos_geaendert_am),
                             acos_link = COALESCE(EXCLUDED.acos_link, acos_artefakte.acos_link),
                             status = CASE WHEN acos_artefakte.status = 'entfernt' THEN 'neu' ELSE acos_artefakte.status END
                         RETURNING (xmax = 0) AS neu""",
                         (fid, o["id"], o["titel"], o["art"], o["erstellt"], o["geaendert"], o["projekt"], o["link"]))
                     if r and r[0]["neu"]:
                         zahl["wissen_neu"] += 1
+                    elif (vorher and vorher["status"] == "abgelegt" and (vorher["art"] or "") != "document"
+                          and o["geaendert"] and vorher["acos_geaendert_am"]
+                          and (o["geaendert"] - vorher["acos_geaendert_am"]).total_seconds() > 60):
+                        # neue Fassung in ACOS: alte Kopie archivieren, neue ablegen (unten im selben Lauf)
+                        neu_pfad = None
+                        if scharf and ablage is not None:
+                            try:
+                                neu_pfad = archivieren(ablage, vorher["nextcloud_pfad"])
+                            except Exception as e:  # noqa: BLE001
+                                notiz(name, "fehler", f"Alte Fassung nicht archiviert: {o['titel']} ({e.__class__.__name__})")
+                                continue
+                        if scharf:
+                            core._x("UPDATE acos_artefakte SET status='neu', nextcloud_pfad=NULL, meldung=NULL WHERE id=%s",
+                                    (vorher["id"],))
+                            notiz(name, "ablage", f"neue Fassung in ACOS: {o['titel']}"
+                                  + (f" – alte Kopie unter /{neu_pfad}" if neu_pfad else ""))
+                        else:
+                            notiz(name, "ablage", f"würde neue Fassung übernehmen und die alte Kopie archivieren: {o['titel']}")
                 if abgeschnitten:
                     # ACOS liefert hoechstens 200 je Abruf - dann nichts als entfernt markieren
                     notiz(name, "hinweis", "mehr als 200 Wissensobjekte in ACOS, nur die ersten 200 übernommen")
                 else:
                     core._x("""UPDATE acos_artefakte SET status='entfernt' WHERE firma_id=%s AND quelle='wissen'
                                AND status <> 'entfernt' AND NOT (acos_id = ANY(%s))""", (fid, gesehen or ["-"]))
+                    # ACOS fuehrt (25.11.2026): eigene Kopien entfernter Objekte nach .../archiviert/
+                    weg = core._q("""SELECT id, titel, nextcloud_pfad FROM acos_artefakte
+                                     WHERE firma_id=%s AND quelle='wissen' AND status='entfernt' AND nextcloud_pfad IS NOT NULL
+                                       AND nextcloud_pfad NOT LIKE '%%/archiviert/%%'
+                                       AND (nextcloud_pfad LIKE '%%/ACOS/Wissen/%%' OR nextcloud_pfad LIKE '%%/ACOS/Dokumente/%%')""", (fid,))
+                    for a in weg:
+                        if not scharf:
+                            notiz(name, "ablage", f"würde archivieren (in ACOS entfernt): /{a['nextcloud_pfad']}")
+                            continue
+                        if ablage is None:
+                            break
+                        try:
+                            neu_pfad = archivieren(ablage, a["nextcloud_pfad"])
+                            core._x("UPDATE acos_artefakte SET nextcloud_pfad=%s, meldung=%s WHERE id=%s",
+                                    (neu_pfad, "In ACOS gelöscht oder archiviert – Kopie archiviert", a["id"]))
+                            notiz(name, "ablage", f"in ACOS entfernt, Kopie archiviert: {a['titel']}")
+                        except Exception as e:  # noqa: BLE001
+                            notiz(name, "fehler", f"Kopie nicht archiviert: {a['titel']} ({e.__class__.__name__})")
+                            zahl["fehler"] += 1
 
                 # Dokumente, die das CRM selbst aus dem Kundenordner gesendet hat, liegen
                 # dort schon im Original - nicht noch einmal ablegen.
@@ -759,6 +848,45 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                     offen = [a for a in offen if a not in dokumente]
                     # liegt die Datei schon im Kundenordner, gleich "in Nextcloud" (Variante A, 04.11.2026)
                     core.acos_verweise_mit_ablage(fid)
+                # Direkt in ACOS hochgeladene Dokumente (25.11.2026): ACOS liefert kein Original, nur Text.
+                # Textauszug nach <Kunde>/ACOS/Dokumente, damit er im Kundenwissen suchbar ist; das Original bleibt in ACOS.
+                direkt = core._q("""SELECT id, acos_id, titel, acos_link, coalesce(acos_erstellt_am, acos_geaendert_am, erstmals_gesehen) AS datum
+                                    FROM acos_artefakte WHERE firma_id=%s AND quelle='wissen' AND art='document' AND status='verweis'
+                                      AND coalesce(meldung, '') NOT LIKE 'Kein Text%%' ORDER BY datum""", (fid,))
+                if direkt and scharf and ablage is not None and ablage.gibt_es(name):
+                    for a in direkt:
+                        if abgelegt_gesamt >= MAX_ABLAGE_JE_LAUF:
+                            break
+                        try:
+                            text = dokument_text(mcp, a["acos_id"])
+                        except Exception as e:  # noqa: BLE001
+                            text = ""
+                            log(f"{name}: Dokumenttext nicht lesbar ({e.__class__.__name__})")
+                        if not text:
+                            core._x("UPDATE acos_artefakte SET meldung=%s WHERE id=%s",
+                                    ("Kein Text lesbar – Datei bleibt in ACOS (im Kundenwissen als Verweis)", a["id"]))
+                            continue
+                        datum = a["datum"].astimezone() if a["datum"] else datetime.now().astimezone()
+                        titel_ohne = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", a["titel"] or "Dokument")
+                        rel_ordner = f"{name}/ACOS/Dokumente"
+                        ablage.ordner(f"{name}/ACOS")
+                        ablage.ordner(rel_ordner)
+                        basisname = dateiname(datum, titel_ohne)
+                        ziel, nr = f"{rel_ordner}/{basisname}.md", 1
+                        while ablage.gibt_es(ziel):
+                            nr += 1
+                            ziel = f"{rel_ordner}/{basisname} ({nr}).md"
+                        kopf = (f"# {a['titel'] or 'Dokument'}\n\n*Textauszug aus ACOS übernommen am {date.today():%d.%m.%Y}, "
+                                f"Dokument {a['acos_id']}. Das Original liegt nur in ACOS.*\n\n")
+                        ablage.datei(ziel, (kopf + text).encode("utf-8"))
+                        pfad = f"{core.kunden_ablage_basis()}/{ziel}"
+                        core._x("""UPDATE acos_artefakte SET status='abgelegt', nextcloud_pfad=%s, abgelegt_am=now(),
+                                   meldung='Textauszug in der Nextcloud, Original in ACOS' WHERE id=%s""", (pfad, a["id"]))
+                        notiz(name, "ablage", f"Textauszug abgelegt: /{pfad}")
+                        zahl["abgelegt"] += 1
+                        abgelegt_gesamt += 1
+                elif direkt and not scharf:
+                    notiz(name, "ablage", f"würde {len(direkt)} direkt in ACOS hochgeladene(s) Dokument(e) als Textauszug ablegen")
                 meldung_firma = None
                 if offen:
                     if ablage is None:
@@ -793,6 +921,9 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                                 pfad = f"{core.kunden_ablage_basis()}/{ziel}"
                                 core._x("""UPDATE acos_artefakte SET status='abgelegt', nextcloud_pfad=%s, abgelegt_am=now(),
                                            meldung=NULL WHERE id=%s""", (pfad, a["id"]))
+                                # neue Fassung eines Auftragsergebnisses: der Auftrag zeigt auf die aktuelle Kopie
+                                core._x("UPDATE acos_auftraege SET nextcloud_pfad=%s WHERE acos_artefakt_id=%s AND nextcloud_pfad IS NOT NULL",
+                                        (pfad, a["acos_id"])) if core._tabelle_da("acos_auftraege") else None
                                 core._x("""INSERT INTO aktivitaeten (firma_id, art, datum, quelle, titel, notiz, payload)
                                            VALUES (%s,'acos',CURRENT_DATE,'acos',%s,%s,%s)""",
                                         (fid, a["titel"], f"Neues Wissensobjekt aus ACOS, abgelegt unter /{pfad}",
@@ -892,10 +1023,12 @@ def voll_faellig(jetzt=None):
     return jetzt >= soll and (not letzt or letzt < soll)
 
 def offene_auftrags_firmen():
-    """Firmen mit Auftraegen, die bei ACOS liegen (uebergeben, Ergebnis noch nicht abgelegt)."""
+    """Firmen mit Auftraegen, die bei ACOS liegen oder auf Antwort warten (uebergeben, Rueckfrage, Fehler) -
+    auch Rueckfragen, damit eine in ACOS geloeschte Rueckfrage oder ein geloeschter Auftrag rasch auffaellt (25.11.2026)."""
     if not core._tabelle_da("acos_auftraege"):
         return []
-    return [r["firma_id"] for r in core._q("SELECT DISTINCT firma_id FROM acos_auftraege WHERE status='uebergeben'")]
+    return [r["firma_id"] for r in core._q(
+        "SELECT DISTINCT firma_id FROM acos_auftraege WHERE status IN ('uebergeben','rueckfrage','fehler') AND firma_id IS NOT NULL")]
 
 def auftraege_faellig(jetzt=None):
     e = takt_einstellungen()
