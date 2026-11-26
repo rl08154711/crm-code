@@ -49,6 +49,17 @@ p = core.pipeline_stand(tag)
 pruef("Rückgang mit Minuszeichen", p["diff"] < 0 and p["diff_text"].startswith("−"))
 core._x("UPDATE projekte SET value = 10000 WHERE id = %s", (pids[0],))
 
+# 1b) Kundenwert (26.11.2026)
+alt = core._q1("INSERT INTO projekte (name, firma_id, status, value) VALUES ('ZZ alt', %s, 'abgeschlossen', 7000) RETURNING id", (fid,))["id"]
+jung = core._q1("INSERT INTO projekte (name, firma_id, status, value) VALUES ('ZZ jung', %s, 'abgeschlossen', 3000) RETURNING id", (fid,))["id"]
+core._x("UPDATE projekte SET updated_at = now() - interval '13 months' WHERE id=%s", (alt,))
+pids += [alt, jung]
+kw = core.kundenwert(fid)
+pruef("Kundenwert: Umsatz 12 Monate = laufend + jüngst abgeschlossen", kw["umsatz"] == 99000 + 3000 and kw["n_umsatz"] == 2)
+pruef("Kundenwert: Abschluss vor 13 Monaten zählt nicht", kw["umsatz_text"] == "102.000 €")
+pruef("Kundenwert: Pipeline offen = Anbahnung + Angebot", kw["pipeline"] == 12500 and kw["n_pipeline"] == 3)
+pruef("Kundenwert: Projekte ohne Wert gezählt", kw["ohne_wert"] == 1)
+
 # 2) Der eine Schritt
 def aufgabe(tid, titel, tage, projekt=None):
     core._x("""INSERT INTO tasks (task_id, title, status, firma_id, projekt_id, deadline) VALUES (%s, %s, 'Offen', %s, %s, %s)""",
@@ -72,6 +83,7 @@ pruef("Grund und Wert gesetzt", f[0]["grund"] == "seit 9 Tagen überfällig" and
 for i in range(7, 12):
     aufgabe(f"ZZF-X{i}", f"Weitere {i}", 1)
 pruef("Höchstens 5 Vorschläge", len(core.fokus_kandidaten(tag)) == 5)
+pruef("Vorschlag trägt den Kundenwert", core.fokus_kandidaten(tag)[0]["kunde"]["umsatz"] == 102000)
 v = core.heute_start_view()
 pruef("Heute liefert fokus, pipeline, acos_streifen", all(k in v for k in ("fokus", "pipeline", "acos_streifen")))
 

@@ -684,7 +684,7 @@ acos_auftraege.py 4338fbe8… → 4690eb800453b175f8de838d6668d526ca9b9f57.
 acos_sync 723b9b6b…, crm_serve 11368269…, wissen_sync 01b5c4b9…). 0009, 0012, 0014 hingen an gelöschten Aufgaben und wurden
 vom Abgleich beendet, 0001 von Hand zurückgezogen. Von Ronald bestätigt.
 
-Geplant (klein): Scheitert das × im ACOS-Streifen, den Streifen trotzdem neu laden, damit keine schon beendeten Aufträge stehen bleiben.
+Geplant (klein): Scheitert das × im ACOS-Streifen, den Streifen trotzdem neu laden, damit keine schon beendeten Aufträge stehen bleiben. → umgesetzt 26.11.2026, s. unten.
 
 ## 2026-11-26 – Geplant: geplante Aufgabe „ACOS-Aufträge abarbeiten (Server)“ anpassen (offen, noch nicht umgesetzt)
 
@@ -693,3 +693,13 @@ Geplant (klein): Scheitert das × im ACOS-Streifen, den Streifen trotzdem neu la
 2. Vermerk „Zurückgezogen <Auftrags-ID>“ (Art crm_rueckfrage, status zurueckgezogen) ausdrücklich als erledigt nennen
    (greift heute schon über Regel 2a, soll aber eindeutig im Prompt stehen).
 Rest des Prompts unverändert. Änderung erst mit Ronalds OK zum Release. Fachlich vorgemerkt von Ronald am 26.11.2026.
+
+## 2026-11-26 – Fokusband: Kundenwert statt Gesamt-Pipeline (nur crm_core.py, live 2026-11-26)
+
+Festlegung Ronald 26.11.2026: Rechts im Band steht der Wert des Kunden aus dem „einen Schritt“ (wechselt mit „Nächster Vorschlag“):
+groß der **Umsatz der letzten 12 Monate**, klein die **offene Pipeline** des Kunden. Quelle (entschieden): Projektwerte, weil das CRM keine
+Rechnungen kennt (die liegen in Lexware Office) – Umsatz = laufende Projekte + in den letzten 12 Monaten abgeschlossene (`updated_at`),
+Pipeline = Anbahnung + Angebot; Projekte ohne Wert werden genannt. Klick öffnet die Akte. Ohne Kunden im Fokus bleibt die Gesamt-Pipeline
+mit Verlauf. Dazu: × im ACOS-Streifen lädt den Streifen auch bei Fehler neu.
+Sandbox: `test_fokusband.py` 27/27 (+5), alle übrigen grün, Browser ohne JavaScript-Fehler.
+crm_core.py live 5f5d6def… → 3e0f5995da1cca7ba36ecf5b7deee102f1606bfc. Sicherung `/root/crm-code-vor-kundenwert/`.

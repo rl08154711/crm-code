@@ -2370,12 +2370,17 @@ function renderFokus(d){
         ${f.length > 1 ? '<button type="button" class="hs-spaeter" onclick="_FK++;renderFokus(_HS)">Nächster Vorschlag ›</button>' : ''}</div>`
     : `<div class="fk-label">Der eine Schritt heute</div><div class="fk-titel fk-leer">Nichts fällig in den nächsten sieben Tagen</div>
       <div class="fk-akt"><button type="button" class="btn btn-ghost hz-klein" onclick="newTask()">＋ Aufgabe</button></div>`;
-  const pip = `<div class="fk-label">Pipeline offen</div><div class="fk-summe">${_hE(p.summe_text || '0 €')}</div>
+  const kw = k && k.kunde && k.firmaId ? k.kunde : null;
+  const pip = kw ? `<div class="fk-label">Kundenwert · ${_hE(k.firma)}</div><div class="fk-summe">${_hE(kw.umsatz_text)}</div>
+      <div class="fk-klein">Umsatz 12 Monate${kw.n_umsatz ? ` · ${kw.n_umsatz} ${kw.n_umsatz === 1 ? 'Projekt' : 'Projekte'}` : ''}</div>
+      <div class="fk-pipe-z">Pipeline offen <b>${_hE(kw.pipeline_text)}</b>${kw.n_pipeline ? ` · ${kw.n_pipeline}` : ''}</div>
+      ${kw.ohne_wert ? `<div class="fk-klein">${kw.ohne_wert} Projekt${kw.ohne_wert === 1 ? '' : 'e'} ohne Wert</div>` : ''}`
+    : `<div class="fk-label">Pipeline offen</div><div class="fk-summe">${_hE(p.summe_text || '0 €')}</div>
       <div class="fk-klein ${p.diff > 0 ? 'fk-gruen' : p.diff < 0 ? 'fk-rot' : ''}">${_hE(p.diff_text || (p.anzahl + ' ' + (p.anzahl === 1 ? 'Projekt' : 'Projekte') + ' in Anbahnung und Angebot'))}</div>
       ${_fkKurve(p.verlauf || [])}${p.ohne_wert ? `<div class="fk-klein">${p.ohne_wert} ohne Wert</div>` : ''}`;
   el.innerHTML = `<div class="fk-band"><div class="fk-ring">${_fkRing(erl, gesamt)}<span>${gesamt ? 'heute erledigt' : 'nichts fällig'}</span></div>
       <div class="fk-mitte">${mitte}</div>
-      <button type="button" class="fk-pipe" title="Projekte öffnen" onclick="showPanel('pipeline', document.querySelector('.tab[data-panel=pipeline]'))">${pip}</button></div>
+      <button type="button" class="fk-pipe" title="${kw ? 'Akte öffnen' : 'Projekte öffnen'}" onclick="${kw ? `openAkte('${_hE(k.firmaId)}')` : "showPanel('pipeline', document.querySelector('.tab[data-panel=pipeline]'))"}">${pip}</button></div>
     <div class="fk-acos" id="fk-acos"></div>`;
   _fkAcos(d.acos_streifen || []);
 }
@@ -2401,7 +2406,8 @@ function fkZurueckziehen(taskId, aid, btn){
   btn.disabled = true;
   api('POST', '/api/tasks/' + encodeURIComponent(taskId) + '/auftrag-zurueckziehen', { auftrags_id: aid })
     .then(()=>{ loadHeuteStart(); if(typeof acosMeldungenLaden === 'function') acosMeldungenLaden(); })
-    .catch(t=>{ btn.disabled = false; let x = 'Konnte nicht zurückgezogen werden.'; try { x = JSON.parse(t).error || x; } catch(e){} alert(x); });
+    .catch(t=>{ btn.disabled = false; let x = 'Konnte nicht zurückgezogen werden.'; try { x = JSON.parse(t).error || x; } catch(e){} alert(x);
+      renderHeuteMeldungen(); });   // Streifen trotzdem neu laden (26.11.2026)
 }
 // Meldungen (Migration 029) laufen seit 23.11. in den ACOS-Streifen statt nach "Im Blick"
 function renderHeuteMeldungen(){
@@ -3646,6 +3652,8 @@ tr.hidden{{display:none}}
 .fk-summe{{font-size:1.35rem;font-weight:700;color:var(--text);line-height:1.2}}
 .fk-klein{{font-size:.74rem;color:var(--text2);margin:.1rem 0 .3rem}}
 .fk-gruen{{color:#15803d}} .fk-rot{{color:#b91c1c}}
+.fk-pipe-z{{font-size:.8rem;color:var(--text2);margin-top:.25rem}}
+.fk-pipe-z b{{color:var(--text);font-weight:600}}
 .fk-acos{{border-top:1px solid var(--border);background:var(--surface2);padding:.45rem 1.1rem;display:flex;flex-direction:column;gap:.35rem}}
 .fk-acos[hidden]{{display:none}}
 .fk-az{{display:flex;align-items:center;gap:.65rem;font-size:.82rem;min-width:0}}
@@ -10567,6 +10575,24 @@ def pipeline_stand(tag):
     out["verlauf"] = werte
     return out
 
+def kundenwert(firma_id):
+    """Wert eines Kunden fuer das Fokusband (26.11.2026, Festlegung Ronald): Umsatz der letzten 12 Monate aus den
+    Projektwerten (laufende Projekte plus in den letzten 12 Monaten abgeschlossene) - das CRM kennt keine Rechnungen,
+    die liegen in Lexware Office - und die offene Pipeline (Anbahnung, Angebot)."""
+    r = _q1("""SELECT coalesce(sum(value) FILTER (WHERE status = 'laeuft'
+                        OR (status = 'abgeschlossen' AND updated_at >= now() - interval '12 months')), 0) AS umsatz,
+                      count(*) FILTER (WHERE status = 'laeuft'
+                        OR (status = 'abgeschlossen' AND updated_at >= now() - interval '12 months')) AS n_umsatz,
+                      coalesce(sum(value) FILTER (WHERE status = ANY(%s)), 0) AS pipeline,
+                      count(*) FILTER (WHERE status = ANY(%s)) AS n_pipeline,
+                      count(*) FILTER (WHERE status IN ('laeuft','abgeschlossen','anbahnung','angebot')
+                                       AND (value IS NULL OR value = 0)) AS ohne_wert
+               FROM projekte WHERE firma_id = %s AND archiviert_am IS NULL""",
+            (list(PIPELINE_PHASEN), list(PIPELINE_PHASEN), int(firma_id)))
+    u, pl = float(r["umsatz"] or 0), float(r["pipeline"] or 0)
+    return {"umsatz": u, "umsatz_text": _euro_kurz(u), "n_umsatz": r["n_umsatz"],
+            "pipeline": pl, "pipeline_text": _euro_kurz(pl), "n_pipeline": r["n_pipeline"], "ohne_wert": r["ohne_wert"]}
+
 def fokus_kandidaten(tag, auf=None):
     """Der eine Schritt heute: aelteste Ueberfaellige zuerst, dann Heutiges nach Projektwert, dann die Woche.
     Aufgaben, die gerade bei ACOS liegen, zaehlen nicht (dort ist nichts zu tun). Hoechstens 5 Vorschlaege."""
@@ -10581,7 +10607,7 @@ def fokus_kandidaten(tag, auf=None):
     heute = sorted([t for t in alle if t["tage"] == 0], key=lambda t: -werte.get(t["taskId"], 0))
     woche = [t for t in alle if t["tage"] < 0]
     from zoneinfo import ZoneInfo
-    out = []
+    out, werte_kunde = [], {}
     for t in (ueber + heute + woche)[:5]:
         k = {k: t[k] for k in ("taskId", "titel", "firma", "firmaId", "projekt", "tage", "faellig")}
         w = werte.get(t["taskId"], 0)
@@ -10589,6 +10615,11 @@ def fokus_kandidaten(tag, auf=None):
         k["grund"] = (f"seit {t['tage']} {'Tag' if t['tage'] == 1 else 'Tagen'} überfällig" if t["tage"] > 0
                       else "heute fällig" if t["tage"] == 0 else t["faellig"])
         k["termin"] = ""
+        if t.get("firmaId"):
+            fk = int(t["firmaId"])
+            if fk not in werte_kunde:
+                werte_kunde[fk] = kundenwert(fk)
+            k["kunde"] = werte_kunde[fk]
         if t.get("firmaId") and _tabelle_da("termin"):
             tr = _q1("""SELECT titel, beginn, ganztag FROM termin WHERE firma_id = %s AND beginn >= now()
                         AND beginn < now() + interval '14 days' ORDER BY beginn LIMIT 1""", (int(t["firmaId"]),))
