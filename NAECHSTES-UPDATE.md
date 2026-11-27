@@ -703,3 +703,48 @@ Pipeline = Anbahnung + Angebot; Projekte ohne Wert werden genannt. Klick öffnet
 mit Verlauf. Dazu: × im ACOS-Streifen lädt den Streifen auch bei Fehler neu.
 Sandbox: `test_fokusband.py` 27/27 (+5), alle übrigen grün, Browser ohne JavaScript-Fehler.
 crm_core.py live 5f5d6def… → 3e0f5995da1cca7ba36ecf5b7deee102f1606bfc. Sicherung `/root/crm-code-vor-kundenwert/`.
+
+## Termin: Lexware Office anbinden – Januar 2027, nicht früher (Festlegung Ronald 26.11.2026)
+
+Dann echte Rechnungen statt Projektwerten für den Kundenwert im Fokusband (Umsatz 12 Monate). Bis dahin bleibt die Quelle „Projektwerte“.
+Vorher keinen Bau und keine Vorarbeit beginnen.
+
+Umfang (Ergänzung Ronald 26.11.2026): nicht nur Rechnungen lesen, sondern **Kundenstammdaten zwischen Lexware Office, CRM und ACOS
+synchron halten** – ein Sync-Prozess, den Claude baut. Vor dem Bau im Januar zu klären:
+- Führendes System je Feldgruppe (z. B. Rechnungsadresse/Steuerdaten → Lexware, Ansprechpartner/Status → CRM, Analysen → ACOS).
+- Gemeinsamer Schlüssel (Lexware-Kontaktnummer am Unternehmen im CRM, wie heute die ACOS-Verknüpfung).
+- Richtung und Takt je Feld, Umgang mit Konflikten (beide Seiten geändert), was nie automatisch überschrieben wird.
+- Neue Kunden: wo angelegt, wie verknüpft; Archivieren/Löschen nach dem Muster „ACOS führt“.
+- Datenschutz: Stammdaten laufen Server ↔ Server, nicht über Claude.
+
+Festlegungen Ronald 26.11.2026 zum Lexware-Sync:
+- Führende Systeme wie vorgeschlagen: Rechnungsadresse/Steuerdaten → Lexware, Ansprechpartner/Status → CRM, Analysen → ACOS.
+- **Schlüssel ist die Lexware-Kundennummer.** Im CRM ein Identifikator `<Lexware-KNr>_<ACOS-Mandant>_<ACOS-Projekt>`
+  (z. B. `10023_M-10_P-14`). Unternehmen ↔ Lexware-Kunde ↔ ACOS-Mandant über die ersten beiden Teile, Projekt über den dritten.
+- **CRM-Projekte und ACOS-Projekte synchronisieren sich automatisch** (neu im Umfang).
+- Übrige Punkte (Richtung/Takt/Konflikte, neue Kunden, Archivieren nach „ACOS führt“, Server ↔ Server) wie oben: ok.
+Geklärt 26.11.2026: Leads ohne Lexware-Kundennummer bekommen einen Platzhalter bis zur Kundennummer. Wer nicht in ACOS geführt wird,
+braucht keine ACOS-Teile – leer oder Dummy. Ändert sich eine Zuordnung (Kundennummer vergeben, in ACOS aufgenommen, Projekt angelegt),
+aktualisiert der Sync die Kennung.
+
+## 2026-11-27 – ACOS führt: Kopie umbenennen statt verschieben (keine Migration, acos_sync.py + wissen_sync.py, live 2026-11-27)
+
+Befund live 27.11.2026: „Kopie nicht archiviert … (HTTPError)“. Ursache: Die Nextcloud lehnt das Verschieben nach `ACOS/Wissen/archiviert/`
+mit **403** ab, weil der CRM-Nutzer an der Freigabe bewusst kein Löschrecht hat (Rechte der Kopie `SGNVW`, kein D). Damit konnte die
+Archivierung aus Release 031 nie gelingen. Umbenennen im selben Ordner braucht nur N.
+- Archivieren = Umbenennen im selben Ordner mit Vorsatz `ARCHIVIERT_` (bei Namensgleichheit `ARCHIVIERT_<Name> (2).md`). Nie löschen,
+  nie überschreiben, kein Ordner `archiviert/` mehr. Alte Kopien unter `archiviert/` gelten weiter als archiviert.
+- Kundenwissen (`wissen_sync.py`) übergeht Dateien mit Vorsatz `ARCHIVIERT_` wie bisher den Ordner `archiviert/`.
+- Fehlermeldungen nennen den HTTP-Code („HTTP 403“ statt „HTTPError“). Scheitert das Archivieren, steht das einmal als Fehler im Lauf und
+  in `meldung` („bitte in der Nextcloud von Hand archivieren“); danach kein neuer Versuch bei jedem Lauf.
+Sandbox (crm_test, Migrationen 002–031, fiktive Daten): smoke grün, `test_acos_fuehrt.py` 57/57 (+4, Attrappe verhält sich wie die
+Nextcloud ohne Löschrecht), übrige ACOS-Tests grün (61, 33, 14, 14, 11). Gegenprobe: alter Code scheitert am neuen Test.
+
+| Datei | live erwartet (Repo-Stand vorher) | neu |
+|---|---|---|
+| acos_sync.py | 723b9b6b892b0e241c2df1f804a556de38e1bde1 | 7d64af8e5ae7d6c432f394b4bb6953c8cebfc96e |
+| wissen_sync.py | 01b5c4b949ab369e26313547a6cbe4eb65f79efb | c9602d5ab2a649d8ed2e9f4eeff289677c6baef3 |
+
+Sicherung: `/root/crm-code-vor-archiv-umbenennen/`. Rückweg: beide Dateien zurück, chown; Timer laden die Skripte selbst neu.
+
+**Live 2026-11-27:** Prüfsummen bestätigt, Dienst neu gestartet, Abgleich von Hand: Kopie zu M-15 umbenannt, von Ronald bestätigt.

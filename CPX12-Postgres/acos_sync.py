@@ -536,12 +536,29 @@ def an_acos_senden(firma_id, pfad, username=None):
 EIGENE_ORDNER = ("ACOS/Wissen/", "ACOS/Dokumente/")   # nur hier legt der Abgleich selbst Kopien an
 
 
+ARCHIV_PRAEFIX = "ARCHIVIERT_"   # 27.11.2026: umbenennen statt verschieben (Freigabe ohne Loeschrecht)
+
+
+def ist_archiviert(pfad):
+    """Eigene Kopie schon archiviert: neuer Weg (Vorsatz ARCHIVIERT_) oder alter Weg (Unterordner archiviert/)."""
+    return bool(pfad) and ("/archiviert/" in pfad or pfad.rsplit("/", 1)[-1].startswith(ARCHIV_PRAEFIX))
+
+
+def http_code(e):
+    """Kurzform fuer Meldungen: 'HTTP 403' statt nur 'HTTPError'."""
+    return f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else e.__class__.__name__
+
+
 def archivieren(ablage, pfad_voll):
-    """ACOS fuehrt (25.11.2026): Kopie eines in ACOS geloeschten/archivierten oder neu gefassten Objekts nach
-    <Ordner>/archiviert/ verschieben - nie loeschen, nie ueberschreiben. Nur fuer Pfade unter ACOS/Wissen
-    und ACOS/Dokumente (Originale im Kundenordner bleiben unberuehrt). Rueckgabe: neuer voller Pfad oder None."""
+    """ACOS fuehrt (25.11.2026): Kopie eines in ACOS geloeschten/archivierten oder neu gefassten Objekts als
+    archiviert kennzeichnen - nie loeschen, nie ueberschreiben. Nur fuer Pfade unter ACOS/Wissen und
+    ACOS/Dokumente (Originale im Kundenordner bleiben unberuehrt).
+    27.11.2026: Umbenennen im selben Ordner mit Vorsatz ARCHIVIERT_ statt Verschieben nach archiviert/.
+    Die Nextcloud verlangt fuer das Verschieben in einen anderen Ordner das Loeschrecht an der Quelle, das der
+    CRM-Nutzer bewusst nicht hat (403). Umbenennen im selben Ordner reicht das Recht N.
+    Rueckgabe: neuer voller Pfad oder None."""
     basis = core.kunden_ablage_basis()
-    if not pfad_voll or not pfad_voll.startswith(basis + "/") or "/archiviert/" in pfad_voll:
+    if not pfad_voll or not pfad_voll.startswith(basis + "/") or ist_archiviert(pfad_voll):
         return None
     rel = pfad_voll[len(basis) + 1:]
     if not any(f"/{o}" in "/" + rel for o in EIGENE_ORDNER):
@@ -550,13 +567,12 @@ def archivieren(ablage, pfad_voll):
     if not ablage.gibt_es(rel):
         core._x("DELETE FROM kundenwissen WHERE pfad=%s", (rel,))
         return None
-    ziel_ordner = f"{ordner}/archiviert"
-    ablage.ordner(ziel_ordner)
     stamm, punkt, endung = datei.rpartition(".")
-    ziel, nr = f"{ziel_ordner}/{datei}", 1
+    ziel, nr = f"{ordner}/{ARCHIV_PRAEFIX}{datei}", 1
     while ablage.gibt_es(ziel):
         nr += 1
-        ziel = f"{ziel_ordner}/{stamm} ({nr}).{endung}" if punkt else f"{ziel_ordner}/{datei} ({nr})"
+        ziel = (f"{ordner}/{ARCHIV_PRAEFIX}{stamm} ({nr}).{endung}" if punkt
+                else f"{ordner}/{ARCHIV_PRAEFIX}{datei} ({nr})")
     ablage.verschieben(rel, ziel)
     core._x("DELETE FROM kundenwissen WHERE pfad=%s", (rel,))   # Kundenwissen zeigt Archiviertes nicht
     return f"{basis}/{ziel}"
@@ -787,7 +803,7 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                             try:
                                 neu_pfad = archivieren(ablage, vorher["nextcloud_pfad"])
                             except Exception as e:  # noqa: BLE001
-                                notiz(name, "fehler", f"Alte Fassung nicht archiviert: {o['titel']} ({e.__class__.__name__})")
+                                notiz(name, "fehler", f"Alte Fassung nicht archiviert: {o['titel']} ({http_code(e)})")
                                 continue
                         if scharf:
                             core._x("UPDATE acos_artefakte SET status='neu', nextcloud_pfad=NULL, meldung=NULL WHERE id=%s",
@@ -802,10 +818,14 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                 else:
                     core._x("""UPDATE acos_artefakte SET status='entfernt' WHERE firma_id=%s AND quelle='wissen'
                                AND status <> 'entfernt' AND NOT (acos_id = ANY(%s))""", (fid, gesehen or ["-"]))
-                    # ACOS fuehrt (25.11.2026): eigene Kopien entfernter Objekte nach .../archiviert/
+                    # ACOS fuehrt (25.11.2026): eigene Kopien entfernter Objekte als archiviert kennzeichnen
+                    # (27.11.2026: Vorsatz ARCHIVIERT_ im selben Ordner). Ist es einmal gescheitert, steht das in
+                    # meldung - dann kein neuer Versuch bei jedem Lauf, sondern Hinweis zum Archivieren von Hand.
                     weg = core._q("""SELECT id, titel, nextcloud_pfad FROM acos_artefakte
                                      WHERE firma_id=%s AND quelle='wissen' AND status='entfernt' AND nextcloud_pfad IS NOT NULL
                                        AND nextcloud_pfad NOT LIKE '%%/archiviert/%%'
+                                       AND position('/ARCHIVIERT_' in nextcloud_pfad) = 0
+                                       AND coalesce(meldung, '') NOT LIKE 'Kopie nicht archiviert%%'
                                        AND (nextcloud_pfad LIKE '%%/ACOS/Wissen/%%' OR nextcloud_pfad LIKE '%%/ACOS/Dokumente/%%')""", (fid,))
                     for a in weg:
                         if not scharf:
@@ -819,7 +839,11 @@ def abgleich(ausgeloest_von="timer", nur_firmen=None):
                                     (neu_pfad, "In ACOS gelöscht oder archiviert – Kopie archiviert", a["id"]))
                             notiz(name, "ablage", f"in ACOS entfernt, Kopie archiviert: {a['titel']}")
                         except Exception as e:  # noqa: BLE001
-                            notiz(name, "fehler", f"Kopie nicht archiviert: {a['titel']} ({e.__class__.__name__})")
+                            grund = http_code(e)
+                            core._x("UPDATE acos_artefakte SET meldung=%s WHERE id=%s",
+                                    (f"Kopie nicht archiviert ({grund}) – bitte in der Nextcloud von Hand archivieren", a["id"]))
+                            notiz(name, "fehler", f"Kopie nicht archiviert: {a['titel']} ({grund}) – bitte von Hand archivieren, "
+                                                  "kein weiterer Versuch")
                             zahl["fehler"] += 1
 
                 # Dokumente, die das CRM selbst aus dem Kundenordner gesendet hat, liegen

@@ -340,8 +340,8 @@ def kundenwissen_abgleich(cfg):
                 geprueft.add(wurzel)
                 for d in dateien:
                     pfad = d["pfad"]
-                    if "/archiviert/" in pfad:
-                        continue   # ACOS fuehrt (25.11.2026): in ACOS Entferntes gehoert nicht ins Kundenwissen
+                    if "/archiviert/" in pfad or pfad.rsplit("/", 1)[-1].startswith("ARCHIVIERT_"):
+                        continue   # ACOS fuehrt (25.11./27.11.2026): in ACOS Entferntes gehoert nicht ins Kundenwissen
                     gesehen.add(pfad)
                     if pfad in bekannt and bekannt[pfad] == d["etag"] and d["etag"]:
                         continue

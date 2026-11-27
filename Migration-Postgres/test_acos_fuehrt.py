@@ -3,11 +3,11 @@
 
 Auftrag zurueckziehen, Doppelklick-Sperre, Rueckfrage mit Auswahl (data.optionen bzw. aus dem Text),
 Abgleich: in ACOS geloeschte Auftraege/Rueckfragen, entfernte und neu gefasste Wissensobjekte
-(Kopie nach .../archiviert/), direkt hochgeladene Dokumente als Textauszug. ACOS und Nextcloud sind Attrappen.
+(Kopie umbenannt mit Vorsatz ARCHIVIERT_, 27.11.2026), direkt hochgeladene Dokumente als Textauszug. ACOS und Nextcloud sind Attrappen.
 
 Aufruf:  CRM_DB_NAME=crm_test python3 test_acos_fuehrt.py /pfad/zu/CPX12-Postgres
 """
-import os, sys, threading
+import os, sys, threading, urllib.error
 
 if os.environ.get("CRM_DB_NAME") != "crm_test":
     sys.exit("Nur gegen crm_test (CRM_DB_NAME=crm_test).")
@@ -36,6 +36,7 @@ OBJEKTE = {}   # Auftraege, Rueckfragen, Wissen: id -> dict
 TEXTE = {}     # Dokument-ID -> Text (am_acos_file_read)
 LESEFEHLER = {"an": False}
 DATEIEN, ORDNER = {}, {FIRMA}
+SPERRE = {"an": False}
 
 class MockMcp:
     def __init__(self, *a): pass
@@ -77,6 +78,10 @@ class MockAblage:
         assert rel not in DATEIEN, "nie ueberschreiben"
         DATEIEN[rel] = daten
     def verschieben(self, rel, ziel):
+        # wie die echte Nextcloud ohne Loeschrecht (27.11.2026): in einen anderen Ordner -> 403,
+        # Umbenennen im selben Ordner erlaubt
+        if SPERRE["an"] or rel.rsplit("/", 1)[0] != ziel.rsplit("/", 1)[0]:
+            raise urllib.error.HTTPError("https://nc.invalid/" + rel, 403, "Forbidden", {}, None)
         assert ziel not in DATEIEN, "nie ueberschreiben"
         DATEIEN[ziel] = DATEIEN.pop(rel)
     def dateien(self, firma): return []
@@ -243,18 +248,40 @@ try:
     del OBJEKTE["w-2"]
     acos_sync.abgleich("test")
     r2 = core._q1("SELECT status, nextcloud_pfad FROM acos_artefakte WHERE acos_id='w-2'")
-    pruef("In ACOS entfernt: Kopie nach archiviert verschoben", r2["status"] == "entfernt" and "/ACOS/Wissen/archiviert/" in r2["nextcloud_pfad"]
+    pruef("In ACOS entfernt: Kopie im selben Ordner mit ARCHIVIERT_ umbenannt", r2["status"] == "entfernt"
+          and r2["nextcloud_pfad"].rsplit("/", 1)[0] == p2.rsplit("/", 1)[0]
+          and r2["nextcloud_pfad"].rsplit("/", 1)[1] == "ARCHIVIERT_" + p2.rsplit("/", 1)[1]
           and rel2 not in DATEIEN and r2["nextcloud_pfad"][len(basis) + 1:] in DATEIEN)
     pruef("…nicht mehr im Kundenwissen", not core._q1("SELECT 1 FROM kundenwissen WHERE pfad=%s", (rel2,)))
     pruef("…nicht mehr in der ACOS-Liste am Unternehmen", "Bericht zwei" not in [a["titel"] for a in core.load_acos_firma(fid)["artefakte"]])
     acos_sync.abgleich("test")
-    pruef("Zweiter Lauf: nichts doppelt archiviert", sum(1 for k in DATEIEN if "/archiviert/" in k) == 1)
+    pruef("Zweiter Lauf: nichts doppelt archiviert", sum(1 for k in DATEIEN if "/ARCHIVIERT_" in k) == 1)
+    pruef("Kein Ordner archiviert/ mehr nötig", not any("/archiviert" in k for k in ORDNER))
+    pruef("Archivierte Kopie gilt als archiviert", acos_sync.ist_archiviert(r2["nextcloud_pfad"])
+          and acos_sync.ist_archiviert("Kunden/X/ACOS/Wissen/archiviert/a.md") and not acos_sync.ist_archiviert(p1))
+
+    # ── Nextcloud verweigert (z. B. 403): einmal Fehler mit Code, dann kein neuer Versuch ──
+    OBJEKTE["w-3"] = {"kind": "report", "title": "Bericht drei", "md": "Inhalt", "upd": "2026-11-20T10:00:00Z"}
+    acos_sync.abgleich("test")
+    p3 = core._q1("SELECT nextcloud_pfad FROM acos_artefakte WHERE acos_id='w-3'")["nextcloud_pfad"]
+    del OBJEKTE["w-3"]
+    SPERRE["an"] = True
+    acos_sync.abgleich("test")
+    r3 = core._q1("SELECT status, nextcloud_pfad, meldung FROM acos_artefakte WHERE acos_id='w-3'")
+    n1 = "Kopie nicht archiviert: Bericht drei" in str(core._q1("SELECT bericht FROM acos_laeufe ORDER BY id DESC LIMIT 1")["bericht"])
+    pruef("Verweigert: Kopie bleibt, Meldung mit HTTP-Code", n1 and r3["nextcloud_pfad"] == p3 and p3[len(basis) + 1:] in DATEIEN
+          and "HTTP 403" in (r3["meldung"] or "") and "von Hand" in r3["meldung"])
+    acos_sync.abgleich("test")
+    n2 = "Kopie nicht archiviert: Bericht drei" in str(core._q1("SELECT bericht FROM acos_laeufe ORDER BY id DESC LIMIT 1")["bericht"])
+    pruef("Verweigert: kein neuer Versuch und keine neue Fehlermeldung beim nächsten Lauf", not n2
+          and core._q1("SELECT nextcloud_pfad FROM acos_artefakte WHERE acos_id=%s", ("w-3",))["nextcloud_pfad"] == p3)
+    SPERRE["an"] = False
 
     # ── neue Fassung ──
     OBJEKTE["w-1"].update(md="Fassung 2", upd="2026-11-25T10:00:00Z")
     acos_sync.abgleich("test")
     r1 = core._q1("SELECT status, nextcloud_pfad FROM acos_artefakte WHERE acos_id='w-1'")
-    arch = [k for k in DATEIEN if "/archiviert/" in k and "Bericht eins" in k]
+    arch = [k for k in DATEIEN if "/ARCHIVIERT_" in k and "Bericht eins" in k]
     pruef("Neue Fassung: alte Kopie archiviert", len(arch) == 1 and b"Fassung 1" in DATEIEN[arch[0]])
     pruef("Neue Fassung: neue Kopie abgelegt", r1["status"] == "abgelegt" and b"Fassung 2" in DATEIEN[r1["nextcloud_pfad"][len(basis) + 1:]])
     acos_sync.abgleich("test")
