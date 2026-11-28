@@ -162,7 +162,8 @@ try:
     pruef("Uebergabe im Trockenlauf abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": "Wettbewerb"}), "Trockenlauf"))
     modus["scharf"] = True
     pruef("Thema ohne Inhalt abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": "  "}), "Thema"))
-    pruef("Firmenname im Thema abgelehnt", wirft(lambda: auf.uebergeben(t, {"thema": f"Markt von {FIRMA}"}), "Unternehmensnamen"))
+    # 28.11.2026: CRM und ACOS duerfen Klartext austauschen - keine Namenssperre mehr
+    pruef("Klartext erlaubt: keine Namenssperre im Thema", not hasattr(auf, "_klartext_pruefen"))
     ACOS_AUS["an"] = False
     pruef("ACOS nicht erreichbar: verstaendliche Meldung, Auftrag als Fehler", wirft(lambda: auf.uebergeben(t, {"thema": "Markt"}), "nicht in ACOS angelegt")
           and core._q1("SELECT status FROM acos_auftraege WHERE task_id=%s", (t,))["status"] == "fehler")

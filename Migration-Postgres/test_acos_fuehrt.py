@@ -130,7 +130,8 @@ try:
     sperre = auf._SPERREN.setdefault(str(t1), threading.Lock()); sperre.acquire()
     pruef("Doppelklick: zweite Übergabe während der ersten abgelehnt", wirft(lambda: auf.uebergeben(t1, {"thema": "Markt"}), "läuft bereits"))
     sperre.release()
-    a1 = auf.uebergeben(t1, {"thema": "Markt"}, "tester")["aktiv"]["auftrags_id"]
+    a1 = auf.uebergeben(t1, {"thema": f"Markt von {FIRMA}, Website www.zz-fuehrt-test.example"}, "tester")["aktiv"]["auftrags_id"]
+    pruef("Klartext: Firmenname und Website im Thema gehen an ACOS", FIRMA in OBJEKTE[objekt_id(a1)]["data"]["thema"])
     pruef("Danach zweite Übergabe: 'liegt noch bei ACOS'", wirft(lambda: auf.uebergeben(t1, {"thema": "Markt"}), "liegt noch bei ACOS"))
     pruef("Nur ein Auftrag angelegt", core._q1("SELECT count(*) n FROM acos_auftraege WHERE task_id=%s", (t1,))["n"] == 1)
 

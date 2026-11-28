@@ -748,3 +748,26 @@ Nextcloud ohne Löschrecht), übrige ACOS-Tests grün (61, 33, 14, 14, 11). Gege
 Sicherung: `/root/crm-code-vor-archiv-umbenennen/`. Rückweg: beide Dateien zurück, chown; Timer laden die Skripte selbst neu.
 
 **Live 2026-11-27:** Prüfsummen bestätigt, Dienst neu gestartet, Abgleich von Hand: Kopie zu M-15 umbenannt, von Ronald bestätigt.
+
+## 2026-11-28 – Klartext CRM↔ACOS, Tagesabschluss 23:30, Heute farbig, eckige Ecken (keine Migration, live 2026-11-28)
+
+| Punkt | Umsetzung |
+|---|---|
+| Klartext | Festlegung Ronald 28.11.2026: CRM und ACOS liegen auf einer Vertrauensebene und dürfen Namen im Klartext austauschen. Die Sperre „Thema/Hinweis ohne Unternehmensnamen“ entfällt (blockierte Antworten mit der Website des Kunden), Feldtexte ohne „(ohne Unternehmensnamen)“. Pseudonymisiert wird weiter auf dem Weg ACOS → Claude (Stealth); Claude darf Platzhalter in Rückfragen verwenden, ACOS setzt dort den Klartext ein. |
+| Tagesabschluss | Timer 23:30 statt 23:40. Werktage bekommen immer einen Abschluss (auch ohne Eintrag, damit morgens ein Briefing da ist), Wochenende nur bei Aktivität. Nachholer 6:30: fehlende Tage der letzten 7 mit Aktivität plus der Vortag (bisher nur der Vortag). Hinweis auf Heute: „sonst automatisch um 23:30“. |
+| Fokusband | Die weiteren Vorschläge stehen als Karten unter dem Band („Danach“, bis zu 4, rot = überfällig, gelb = heute); Klick holt sie nach vorn. „Der eine Schritt“ hervorgehoben (Akzentleiste, größerer Titel, Lavendel). |
+| Pastell | Blöcke auf Heute mit eigenen Pastelltönen: Fokus Lavendel, Briefing Hellblau, Zu erledigen Mint, Mail-Review Pfirsich, Termine Himmelblau, Im Blick Rosé, Tagesbilanz Sand. |
+| Ecken | Alle Ecken eckig (Knöpfe, Felder, Karten, Menüs, Fenster, Etiketten) auf Desktop, Handy und Anmeldung; nur Punkte und Kürzel-Kreise bleiben rund. |
+
+Sandbox: neu `test_tagesabschluss_auto.py` 7/7, `test_acos_fuehrt.py` 58/58 (+1 Klartext), `test_acos_auftraege.py` 61/61 (Namenssperre-Prüfung
+ersetzt), alle übrigen grün; Browser 29/29, Desktop und Handy angesehen, keine JavaScript-Fehler.
+
+| Datei | live vorher | neu |
+|---|---|---|
+| crm_core.py | 3e0f5995… | 9a3adae86aa8bcab00ab8598eecb9193471c4e6a |
+| acos_auftraege.py | 4690eb80… | 1f14e8a32d326b8422f2b959c5e2a3dcfc9bd8d9 |
+| tagesabschluss.py | 49f543f7… | e5512b22aaed385771e9de798a6ad25f59274a5d |
+| crm-tagesabschluss.timer | – | 02672e484b4ec04fffb7a10661786a856c9af68e (daemon-reload) |
+
+Sicherung `/root/crm-code-vor-1128/`. Danach (mit OK): Prompt der geplanten Aufgabe – `data.optionen`, Vermerk „Zurückgezogen“,
+Platzhalter in Rückfragen erlaubt (Punkt „Geplant 26.11.“ oben).

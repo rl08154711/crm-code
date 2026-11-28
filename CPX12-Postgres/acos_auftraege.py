@@ -318,14 +318,9 @@ def auftraege_zu_aufgabe(task_id):
                 verlauf=verlauf, task_status=t["status"], abgleich=abgleich_stand(), takt=takt_text())
 
 
-def _klartext_pruefen(text, firma):
-    """Thema und Hinweise gehen in die Auftragsdatei - ohne Firmennamen."""
-    import acos_sync
-    n = acos_sync.norm(text)
-    fn = acos_sync.norm(firma or "")
-    if fn and len(fn) >= 4 and fn in n:
-        raise ValueError("Thema oder Hinweis enthält den Unternehmensnamen. Bitte ohne Namen formulieren "
-                         "(der Mandant ist über die Nummer eindeutig).")
+# 28.11.2026 (Festlegung Ronald): CRM und ACOS liegen auf derselben Vertrauensebene und duerfen Klartext austauschen.
+# Die fruehere Sperre "Thema/Hinweis ohne Unternehmensnamen" (_klartext_pruefen) entfaellt - sie blockierte z. B.
+# Antworten mit der Website des Kunden. Pseudonymisiert wird erst auf dem Weg ACOS -> Claude (Stealth).
 
 
 def vorpruefung_firma(firma_id):
@@ -437,7 +432,6 @@ def _uebergeben(task_id, body, username=None):
             frage = " (Frage: „" + " ".join(str(ersetzt["rueckfrage"]).split())[:900] + "“)"
         hinweise = (f"{art} zu {ersetzt['auftrags_id']}{frage}: {folge}" if ersetzt else folge) + (f"\n{hinweise}" if hinweise else "")
     hinweise = hinweise[:2000]
-    _klartext_pruefen(thema + " " + hinweise, t["firma"])
     if not _modus_scharf():
         raise ValueError("ACOS steht auf Trockenlauf – es wird nichts geschrieben. Modus in den Einstellungen auf scharf stellen.")
 

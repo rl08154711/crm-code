@@ -1918,7 +1918,7 @@ function akaAcosLaden(){
       <div id="aka-acos-teil" hidden>
         <label class="ak-feld">Skill<select id="aka-skill" onchange="akaSkillInfo()">${d.typen.map(t=>`<option value="${_akE(t.slug)}">${_akE(t.titel)}</option>`).join('')}</select></label>
         <div id="aka-skill-info" class="ak-leer" style="margin-top:.3rem"></div>
-        <label class="ak-feld">Thema für ACOS (ohne Unternehmensnamen)<input id="aka-thema" maxlength="500" placeholder="z. B. Erstanalyse Unternehmensprofil und Marktumfeld"></label>
+        <label class="ak-feld">Thema für ACOS<input id="aka-thema" maxlength="500" placeholder="z. B. Erstanalyse Unternehmensprofil und Marktumfeld"></label>
         <label class="ak-feld">Hinweise für ACOS (optional)<textarea id="aka-hinweise" rows="2"></textarea></label>
         <div id="aka-vor" class="ak-leer" style="margin-top:.3rem"></div>
         ${d.scharf ? '' : '<p class="ak-leer" style="color:#b91c1c">ACOS steht auf Trockenlauf – übergeben geht erst im Modus scharf.</p>'}
@@ -2203,7 +2203,7 @@ function renderHeuteAbschluss(d){
   const form = (knopf, wert) => `<div class="hz-aktion"><textarea id="hz-notiz" placeholder="Notiz zum Tag (optional)">${_hE(wert||'')}</textarea>
       <button type="button" class="btn btn-primary" onclick="tagAbschliessen()">${knopf}</button></div><p class="hz-meta" id="hz-msg"></p>`;
   if(!a){
-    if(hinweis) hinweis.textContent = 'sonst automatisch in der Nacht';
+    if(hinweis) hinweis.textContent = 'sonst automatisch um 23:30';
     el.innerHTML = _hzTageszahlen(d) + form('Tag abschließen');
     return;
   }
@@ -2361,13 +2361,13 @@ function renderFokus(d){
   const f = d.fokus || [], p = d.pipeline || {};
   if(_FK >= f.length) _FK = 0;
   const k = f[_FK];
-  const mitte = k ? `<div class="fk-label">Der eine Schritt heute${f.length > 1 ? ` · ${_FK + 1} von ${f.length}` : ''}</div>
+  const mitte = k ? `<div class="fk-label">Der eine Schritt heute</div>
       <button type="button" class="fk-titel" onclick="editTask('${_hE(k.taskId)}')">${_hE(k.titel)}</button>
       <div class="fk-wo">${[k.firma ? _hsFirmaLink(k) : '', k.termin ? _hE(k.termin) : '', k.wert ? 'Projekt ' + _hE(k.wert) : '']
           .filter(Boolean).join(' · ') || 'eigene Aufgabe'} · <span class="${k.tage > 0 ? 'fk-rot' : ''}">${_hE(k.grund)}</span></div>
       <div class="fk-akt"><button type="button" class="btn btn-primary hz-klein" onclick="editTask('${_hE(k.taskId)}')">Öffnen</button>
         <button type="button" class="btn btn-ghost hz-klein" onclick="fokusErledigt('${_hE(k.taskId)}', this)">Erledigt</button>
-        ${f.length > 1 ? '<button type="button" class="hs-spaeter" onclick="_FK++;renderFokus(_HS)">Nächster Vorschlag ›</button>' : ''}</div>`
+      </div>`
     : `<div class="fk-label">Der eine Schritt heute</div><div class="fk-titel fk-leer">Nichts fällig in den nächsten sieben Tagen</div>
       <div class="fk-akt"><button type="button" class="btn btn-ghost hz-klein" onclick="newTask()">＋ Aufgabe</button></div>`;
   const kw = k && k.kunde && k.firmaId ? k.kunde : null;
@@ -2378,10 +2378,14 @@ function renderFokus(d){
     : `<div class="fk-label">Pipeline offen</div><div class="fk-summe">${_hE(p.summe_text || '0 €')}</div>
       <div class="fk-klein ${p.diff > 0 ? 'fk-gruen' : p.diff < 0 ? 'fk-rot' : ''}">${_hE(p.diff_text || (p.anzahl + ' ' + (p.anzahl === 1 ? 'Projekt' : 'Projekte') + ' in Anbahnung und Angebot'))}</div>
       ${_fkKurve(p.verlauf || [])}${p.ohne_wert ? `<div class="fk-klein">${p.ohne_wert} ohne Wert</div>` : ''}`;
+  // 28.11.2026: die weiteren Vorschlaege sichtbar als Karten ("Danach"), Klick holt sie nach vorn
+  const danach = f.map((x, i)=>({x, i})).filter(o=>o.i !== _FK).slice(0, 4);
+  const dl = danach.length ? `<div class="fk-danach"><span class="fk-dl">Danach</span>${danach.map(o=>`<button type="button" class="fk-nk${o.x.tage > 0 ? ' fk-nk-rot' : o.x.tage === 0 ? ' fk-nk-heute' : ''}" title="Nach vorn holen" onclick="_FK=${o.i};renderFokus(_HS)">
+      <b>${_hE(o.x.titel)}</b><span>${o.x.firma ? _hE(o.x.firma) + ' · ' : ''}${_hE(o.x.grund)}</span></button>`).join('')}</div>` : '';
   el.innerHTML = `<div class="fk-band"><div class="fk-ring">${_fkRing(erl, gesamt)}<span>${gesamt ? 'heute erledigt' : 'nichts fällig'}</span></div>
       <div class="fk-mitte">${mitte}</div>
       <button type="button" class="fk-pipe" title="${kw ? 'Akte öffnen' : 'Projekte öffnen'}" onclick="${kw ? `openAkte('${_hE(k.firmaId)}')` : "showPanel('pipeline', document.querySelector('.tab[data-panel=pipeline]'))"}">${pip}</button></div>
-    <div class="fk-acos" id="fk-acos"></div>`;
+    ${dl}<div class="fk-acos" id="fk-acos"></div>`;
   _fkAcos(d.acos_streifen || []);
 }
 function fokusErledigt(taskId, btn){
@@ -3634,14 +3638,15 @@ tr.hidden{{display:none}}
 .nav-favs .tab{{padding:.95rem 1rem .85rem}}
 /* Heute: Journal, Abschluss, Briefing (Migration 010) */
 .hs-kopf{{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:.4rem 0 1.1rem}}
-.hs-fokus{{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1rem}}
+.hs-fokus{{background:#faf8ff;border:1px solid #ddd6fe;border-radius:12px;overflow:hidden;margin-bottom:1rem}}
 .hs-fokus:empty{{display:none}}
 .fk-band{{display:grid;grid-template-columns:118px minmax(0,1fr) 190px}}
 .fk-ring{{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.2rem;padding:.8rem;border-right:1px solid var(--border);font-size:.74rem;color:var(--text2)}}
 .fk-ringzahl{{font-size:16px;font-weight:700;fill:var(--text)}}
-.fk-mitte{{padding:.85rem 1.1rem;min-width:0}}
+.fk-mitte{{padding:.9rem 1.2rem;min-width:0;background:#f5f3ff;border-left:4px solid var(--accent)}}
 .fk-label{{font-size:.74rem;color:var(--text2);margin-bottom:.15rem}}
-.fk-titel{{display:block;background:none;border:0;padding:0;font:inherit;font-size:1.12rem;font-weight:700;color:var(--text);cursor:pointer;text-align:left;line-height:1.3}}
+.fk-mitte>.fk-label{{font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent2)}}
+.fk-titel{{display:block;background:none;border:0;padding:0;font:inherit;font-size:1.3rem;font-weight:700;color:var(--text);cursor:pointer;text-align:left;line-height:1.25}}
 .fk-titel:hover{{color:var(--accent)}}
 .fk-leer{{color:var(--text2);font-weight:600;cursor:default}}
 .fk-wo{{font-size:.8rem;color:var(--text2);margin:.2rem 0 .6rem}}
@@ -3654,6 +3659,15 @@ tr.hidden{{display:none}}
 .fk-gruen{{color:#15803d}} .fk-rot{{color:#b91c1c}}
 .fk-pipe-z{{font-size:.8rem;color:var(--text2);margin-top:.25rem}}
 .fk-pipe-z b{{color:var(--text);font-weight:600}}
+.fk-danach{{display:flex;gap:.5rem;align-items:stretch;padding:.55rem 1.1rem;border-top:1px solid #ddd6fe;background:#faf8ff;overflow-x:auto}}
+.fk-dl{{flex:none;align-self:center;font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);width:3.6rem}}
+.fk-nk{{flex:1 1 0;min-width:150px;max-width:260px;text-align:left;background:#fff;border:1px solid #e4e0fb;border-left:3px solid #a5b4fc;
+  padding:.4rem .6rem;font:inherit;cursor:pointer;display:flex;flex-direction:column;gap:.1rem}}
+.fk-nk:hover{{border-color:var(--accent);box-shadow:0 2px 8px rgba(79,70,229,.12)}}
+.fk-nk b{{font-size:.84rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.fk-nk span{{font-size:.74rem;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.fk-nk-rot{{border-left-color:#f87171}} .fk-nk-rot span{{color:#b91c1c}}
+.fk-nk-heute{{border-left-color:#fbbf24}}
 .fk-acos{{border-top:1px solid var(--border);background:var(--surface2);padding:.45rem 1.1rem;display:flex;flex-direction:column;gap:.35rem}}
 .fk-acos[hidden]{{display:none}}
 .fk-az{{display:flex;align-items:center;gap:.65rem;font-size:.82rem;min-width:0}}
@@ -3681,6 +3695,13 @@ tr.hidden{{display:none}}
 .hs-raster{{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:1rem;align-items:start}}
 .hs-spalte{{display:flex;flex-direction:column;gap:1rem;min-width:0}}
 .hs-karte{{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}}
+/* 28.11.2026: Bloecke auf "Heute" in Pastell - Kopf etwas kraeftiger, Inhalt nur angehaucht */
+.hp-mint{{background:#f7fdf9;border-color:#cdeedd}} .hp-mint .hs-kk{{background:#e6f7ee;border-bottom-color:#cdeedd}}
+.hp-pfirsich{{background:#fffaf5;border-color:#fbdcc2}} .hp-pfirsich .hs-kk{{background:#fff0e3;border-bottom-color:#fbdcc2}}
+.hp-himmel{{background:#f7fbff;border-color:#cfe3f8}} .hp-himmel .hs-kk{{background:#e8f2fd;border-bottom-color:#cfe3f8}}
+.hp-rose{{background:#fff8fb;border-color:#f6d3e3}} .hp-rose .hs-kk{{background:#fdeaf3;border-bottom-color:#f6d3e3}}
+.hp-sand{{background:#fffdf5;border-color:#f1e4b8}} .hp-sand .hs-kk{{background:#fcf5dc;border-bottom-color:#f1e4b8}}
+.hp-sand .hs-br{{border-left-color:#f1e4b8}}
 .hs-kk{{display:flex;align-items:center;gap:.6rem;padding:.75rem 1rem;border-bottom:1px solid var(--border)}}
 .hs-kk h3{{margin:0;font-size:1rem;flex:1 1 auto}}
 .hs-kk span{{font-size:.8rem;color:var(--text2)}}
@@ -3807,7 +3828,7 @@ button.hz-link:disabled{{opacity:.5}}
 .hz-aktion textarea{{flex:1;min-width:14rem;min-height:2.6rem;font:inherit;font-size:.84rem;padding:.45rem .6rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text)}}
 .hz-meta{{font-size:.75rem;color:var(--text2);margin-top:.6rem}}
 .hz-notiz{{font-size:.85rem;font-style:italic;border-left:3px solid var(--accent);padding:.15rem .7rem;margin:.2rem 0 .4rem}}
-.hz-briefing{{border:1px solid var(--border);border-radius:12px;background:var(--surface);margin-bottom:1rem;overflow:hidden}}
+.hz-briefing{{border:1px solid #d6defc;border-radius:12px;background:#f8faff;margin-bottom:1rem;overflow:hidden}}
 .hz-briefing summary{{cursor:pointer;font-weight:700;font-size:.9rem;list-style:none;display:flex;align-items:baseline;gap:.75rem;flex-wrap:wrap;background:#eef2ff;padding:.6rem 1rem;color:var(--accent2)}}
 .hz-briefing summary .hz-auf{{margin-left:auto;font-weight:400;font-size:.78rem;color:var(--accent)}}
 .hz-briefing:not([open]) summary{{background:var(--surface)}}
@@ -4325,6 +4346,9 @@ tr.st-hidden{{display:none !important}}
   .j-text{{min-width:0}}
 }}
 .art-aus{{display:none!important}}
+/* 28.11.2026 (Wunsch Ronald): eckige statt runde Ecken ueberall; nur Punkte und Kuerzel-Kreise bleiben rund */
+*,*::before,*::after{{border-radius:0!important}}
+.kl-kuerzel b,.p-av,.kt i,.hs-punkt,.ak-av,.set-sw,.stufe,.pers .av,.av,.hz-punkt,.ampel{{border-radius:50%!important}}
 </style>
 </head>
 <body>
@@ -4391,23 +4415,23 @@ tr.st-hidden{{display:none !important}}
   <div id="h-briefing"></div>
   <div class="hs-raster">
     <div class="hs-spalte">
-      <section class="hs-karte" id="hs-karte-aufgaben" aria-label="Aufgaben"><div class="hs-kk"><h3>Zu erledigen</h3><span id="hs-erl"></span>
+      <section class="hs-karte hp-mint" id="hs-karte-aufgaben" aria-label="Aufgaben"><div class="hs-kk"><h3>Zu erledigen</h3><span id="hs-erl"></span>
         <a href="#" class="hz-link" onclick="showPanel('tasks', document.querySelector('.tab[data-panel=tasks]'));return false">Alle Aufgaben</a></div>
         <div id="hs-aufgaben"><p class="hz-leer">Wird geladen…</p></div></section>
-      <section class="hs-karte" aria-label="Mail-Review"><div class="hs-kk"><h3>Mail-Review</h3><span id="hs-mailzahl"></span>
+      <section class="hs-karte hp-pfirsich" aria-label="Mail-Review"><div class="hs-kk"><h3>Mail-Review</h3><span id="hs-mailzahl"></span>
         <a href="#" class="hz-link" onclick="showPanel('mailreview', document.querySelector('.tab[data-panel=mailreview]'));return false">Alle prüfen</a></div>
         <div id="hs-mails"></div></section>
     </div>
     <div class="hs-spalte">
-      <section class="hs-karte" id="hs-karte-termine" aria-label="Termine"><div class="hs-kk"><h3>Termine</h3><span id="hs-kalstand"></span>
+      <section class="hs-karte hp-himmel" id="hs-karte-termine" aria-label="Termine"><div class="hs-kk"><h3>Termine</h3><span id="hs-kalstand"></span>
         <button type="button" class="hz-link" title="Kalender jetzt abrufen" onclick="kalenderAbgleich(this)">↺ Abrufen</button></div>
         <div id="hs-termine"></div></section>
-      <section class="hs-karte" aria-label="Im Blick"><div class="hs-kk"><h3>Im Blick</h3><span>ohne Termin, aber fällig</span></div>
+      <section class="hs-karte hp-rose" aria-label="Im Blick"><div class="hs-kk"><h3>Im Blick</h3><span>ohne Termin, aber fällig</span></div>
         <div id="hs-blick"></div></section>
     </div>
   </div>
 
-  <section class="hs-karte hs-bilanz" aria-label="Tagesbilanz">
+  <section class="hs-karte hs-bilanz hp-sand" aria-label="Tagesbilanz">
     <div class="hs-bl">
       <div class="hs-kk"><h3>Heute erledigt und erfasst</h3>
         <button type="button" class="hz-link" onclick="journalNeuAusHeute()">＋ Eintrag</button>
@@ -4415,7 +4439,7 @@ tr.st-hidden{{display:none !important}}
       <div id="h-tag"><p class="hz-leer">Wird geladen…</p></div>
     </div>
     <div class="hs-br">
-      <div class="hs-kk"><h3>Tagesabschluss</h3><span id="h-abschluss-hinweis">sonst automatisch in der Nacht</span></div>
+      <div class="hs-kk"><h3>Tagesabschluss</h3><span id="h-abschluss-hinweis">sonst automatisch um 23:30</span></div>
       <div id="h-abschluss"><p class="hz-leer">Wird geladen…</p></div>
     </div>
   </section>
@@ -5629,7 +5653,7 @@ function aufZeichnen() {{
       const vorher = a && a.artefakttyp ? a.artefakttyp : 'mandatsstart-analyse';
       h += '<label class="auf-label" for="auf-typ">Skill</label><select id="auf-typ" onchange="aufSkillInfo()">' + d.typen.map(t => '<option value="' + _esc(t.slug) + '"' + (t.slug === vorher ? ' selected' : '') + '>' + _esc(t.titel) + '</option>').join('') + '</select>';
       h += '<div id="auf-skill" class="auf-klein"></div>';
-      h += '<label class="auf-label" for="auf-thema">Thema (ohne Unternehmensnamen)</label><input id="auf-thema" maxlength="500" placeholder="Erstanalyse Unternehmensprofil und Marktumfeld"' + (a && a.thema ? ' value="' + _esc(a.thema) + '"' : '') + '>';
+      h += '<label class="auf-label" for="auf-thema">Thema</label><input id="auf-thema" maxlength="500" placeholder="Erstanalyse Unternehmensprofil und Marktumfeld"' + (a && a.thema ? ' value="' + _esc(a.thema) + '"' : '') + '>';
       h += '<label class="auf-label" for="auf-hinweise">Hinweise für ACOS (optional)</label><textarea id="auf-hinweise" rows="2"></textarea>';
       h += '<div id="auf-vor" class="auf-klein"></div>';
       if (!d.scharf) h += '<div class="auf-rueck">ACOS steht auf Trockenlauf – übergeben geht erst, wenn der Modus auf scharf steht.</div>';
@@ -7029,6 +7053,10 @@ nav button.on{color:var(--accent);font-weight:600}
 .pers .av{flex:0 0 34px;height:34px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
 .pers .pn{flex:1;min-width:0}
 .notiz textarea{width:100%;font:inherit;font-size:16px;border:1px solid var(--border);border-radius:10px;padding:8px;min-height:80px;margin-top:6px}
+
+/* 28.11.2026 (Wunsch Ronald): eckige statt runde Ecken ueberall; nur Punkte und Kuerzel-Kreise bleiben rund */
+*,*::before,*::after{border-radius:0!important}
+.kl-kuerzel b,.p-av,.kt i,.hs-punkt,.ak-av,.set-sw,.stufe,.pers .av,.av,.hz-punkt,.ampel{border-radius:50%!important}
 </style></head>
 <body>
 <header><h1>CRM</h1><div class="meta" id="meta"></div></header>
@@ -8506,6 +8534,7 @@ def build_login_page(error=False):
   button:hover{{background:var(--accent2)}}
   button:disabled{{opacity:.6;cursor:default}}
   #err{{{error_style};color:var(--red);font-size:.82rem;margin-bottom:1rem}}
+  *,*::before,*::after{{border-radius:0!important}}
 </style></head>
 <body>
   <form class="card" id="login-form">
